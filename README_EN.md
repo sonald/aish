@@ -14,7 +14,7 @@ Empower the Shell to think. Evolve Operations.
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](#)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-<img src="docs/images/demo.gif" alt="AI Shell Demo" width="800">
+![](./docs/images/demo.gif)
 
 **A Real AI Shell: Complete PTY + Configurable Security & Risk Control**
 
@@ -324,8 +324,7 @@ uv run pytest
 
 ## Contributing
 
-`CONTRIBUTING.md` (currently empty, contributions welcome)
-
+`CONTRIBUTING.md`
 ---
 
 ## License

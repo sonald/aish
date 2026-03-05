@@ -14,7 +14,7 @@
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](#)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-<img src="docs/images/demo.gif" alt="AI Shell 演示动图" width="800">
+![](./docs/images/demo.gif)
 
 **一个真实可用的 AI Shell：完整 PTY + 可配置的安全与风险控制**
 
@@ -321,8 +321,7 @@ uv run pytest
 
 ## 贡献
 
-`CONTRIBUTING.md`（当前为空，欢迎补充）
-
+`CONTRIBUTING.md`
 ---
 
 ## 许可证
