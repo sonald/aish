@@ -1,0 +1,87 @@
+AI Shell (aish) Release Notes
+
+## v0.1.0 (Initial Release) — 2026-03-06
+ AI Shell is an AI-powered shell for everyday terminal work. It brings Q&A, explanations, suggestions, and troubleshooting directly into the terminal without changing your existing command-line habits, while also providing safety confirmation and blocking mechanisms based on security policies and sandbox availability to reduce the risk of accidental operations.
+
+### I. Version Overview
+
+- **Built-in terminal AI assistant**: In aish, you can start AI requests directly by typing `;`. This lets you ask questions, explain commands, request solutions, and use tools to complete tasks without leaving the command line.
+- **Multi-model, multi-provider integration**: Built on LiteLLM, it supports a variety of mainstream model providers and allows custom API Base configuration.
+- **Security mechanisms for AI operations**: Provides risk-level assessment and confirmation/blocking for AI-triggered commands and changes, depending on sandbox capabilities.
+- **Skills mechanism (extensible and hot-reloadable)**: Supports loading Skills from specified directories and hot reloading them during runtime.
+
+### II. Core Features and Capabilities
+
+#### 1. Terminal Interaction and AI Collaboration
+
+- **Interactive REPL shell**: Standard commands run normally with full PTY support and compatibility with common interactive programs.
+- **AI mode**: Input starting with `;` (or the Chinese full-width `；`) triggers an AI request. Within a conversation, you can combine tool usage to run commands, read or edit files, and troubleshoot issues.
+- **Terminal UI**: Built on Rich, with support for streaming output, thinking indicators, and Ctrl+C interruption with input recovery for long conversations or tasks.
+- **System diagnostic capabilities**: Includes built-in diagnostic workflows for log analysis and troubleshooting scenarios, and can produce structured conclusions and suggestions with the help of tools and Skills.
+
+#### 2. Tool Invocation and File/Code Operations
+
+- **Tool call suite (built in for AI)**: `bash_exec`, `python_exec`, `read_file`, `write_file`, `edit_file`, `ask_user`, `system_diagnose_agent`, `skill`.
+  - `bash_exec`: Executes non-interactive shell commands.
+  - `python_exec`: Executes Python code.
+  - `read_file`: Reads file contents.
+  - `write_file`: Overwrites file contents.
+  - `edit_file`: Edits files through string replacement.
+  - `ask_user`: Interrupts execution to ask the user for options or input.
+  - `system_diagnose_agent`: A diagnostic agent.
+  - `skill`: Invokes a Skill.
+
+- **Cross-file operation capabilities**: Supports reading and editing multiple files to complete batch changes, and can verify those changes by running commands, including tests, through `bash_exec`.
+- **Built-in command compatibility**: Provides dedicated handling for commands that modify shell state: `cd`, `pushd`, `popd`, `export`, `unset`, `dirs`, `pwd`, `history`.
+
+#### 3. Skill Extension Mechanism and Hot Reloading
+
+- **Skill configuration and loading**: Supports loading Skills from the user directories `~/.config/aish/skills/` (or `$AISH_CONFIG_DIR/skills`) and `~/.claude/skills/`. If names conflict, Skills in the user directory take precedence.
+- **Skill metadata and permissions**: Uses YAML front matter in `SKILL.md` to describe capabilities, `allowed_tools`, and related metadata.
+- **Hot reloading**: Monitors Skill directories during runtime. Added, removed, or modified Skills automatically take effect on the next tool-list build or Skill invocation (lazy reload), without requiring a restart.
+- **Large-output offloading**: If `bash_exec` output exceeds a threshold, it is written to disk and only a preview is shown, along with the path to the full output file. In PTY mode, a limited number of bytes is retained, and the excess is written to an offload file. Both the threshold and directory are configurable.
+
+#### 4. Security and Risk Control
+
+- **AI command safety detection**: AI-triggered commands and changes are assessed by risk level (`LOW` / `MEDIUM` / `HIGH`), with explainable reasons for each match.
+- **Confirmation and blocking mechanism**: When the sandbox is available or a policy rule is matched, `MEDIUM`-risk actions require confirmation and `HIGH`-risk actions are blocked. If the sandbox is unavailable, handling falls back to the `sandbox_off_action` rule, which may allow, require confirmation for, or block the action.
+- **Sandbox and policies**: The sandbox is preferred for risk analysis. If the sandbox is unavailable, fallback actions defined in security policies are applied instead, such as requiring confirmation or blocking the action.
+  - System-level policy: `/etc/aish/security_policy.yaml`
+  - User-level policy: `~/.config/aish/security_policy.yaml` (a template is generated automatically if it does not exist)
+  - Enabling the sandbox service is recommended for full protection.
+
+- **Optional whitelist**: Supports pre-approving specific AI commands, effective only when the sandbox is available, to reduce repeated confirmations.
+
+### III. Observability and Configuration
+
+- **Configuration system**: Supports configuration files, environment variables, and command-line arguments together. Priority is: command-line arguments > environment variables > configuration files. Output language can be configured or auto-detected.
+- **Interactive configuration and model switching**: On first run, a wizard guides the user through selecting a provider/model and verifying tool calls. `/setup` allows reconfiguration, and `/model <name>` validates and switches the model.
+- **Observability (optional)**: Langfuse can be enabled for LLM observability and tracing. It is disabled by default.
+- **History and session persistence**: Command and AI-request history is written to SQLite in WAL mode, supporting cross-session queries. The database path can be configured through `session_db_path`.
+
+### IV. Known Limitations and Future Plans
+
+- **Long-running tasks and large output**: Output generated by long-running commands or large-result commands may exceed the model's context limit and may not be processed in full. In such cases, it is recommended that users run those commands directly in the shell.
+- **Context trimming and budget**: Supports configuring `max_llm_messages`, `max_shell_messages`, and an optional `context_token_budget`. Context is automatically trimmed when limits are exceeded.
+- **Sandbox unavailability**: If the sandbox is unavailable, security capabilities are significantly reduced.
+
+- **Planned improvements**:
+  - Better support for long-running tasks
+  - Improved terminal rendering and interaction, with better performance for large contexts
+  - Ongoing refinement of functionality and security based on user feedback
+  - Improved sandbox error handling
+  - Enhanced Skill execution and extensibility
+
+### V. Compatibility
+
+- Primarily intended for Linux interactive terminal environments.
+- Runtime environment: Python 3.10+.
+- Verified on:
+  - Deepin V25
+  - Ubuntu 24.04
+
+Sandbox capabilities and interaction experience may vary across platforms and distributions.
+
+### VI. Community
+
+- Join our [Discord](https://discord.com/invite/Pw2mjZt3) to connect with other users and developers.
