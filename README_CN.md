@@ -8,7 +8,7 @@
 
 让 Shell 拥有思考力，让运维由此进化
 
-[![Official Website](https://img.shields.io/badge/官网-aishell.ai-blue.svg)](https://aishell.ai)
+[![Official Website](https://img.shields.io/badge/官网-aishell.ai-blue.svg)](https://www.aishell.ai)
 [![GitHub](https://img.shields.io/badge/GitHub-AI--Shell--Team/aish-black.svg)](https://github.com/AI-Shell-Team/aish/)
 [![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](#)
@@ -314,7 +314,7 @@ Skills 用于扩展 AI 的专用知识与工作流，支持热加载与覆盖优
 
 | 链接 | 说明 |
 |------|------|
-| [官方网站](https://aishell.ai) | 项目官网与更多信息 |
+| [官方网站](https://www.aishell.ai) | 项目官网与更多信息 |
 | [GitHub 仓库](https://github.com/AI-Shell-Team/aish/) | 源码与问题反馈 |
 | [GitHub Issues](https://github.com/AI-Shell-Team/aish/issues) | Bug 报告 |
 | [GitHub Discussions](https://github.com/AI-Shell-Team/aish/discussions) | 社区讨论 |

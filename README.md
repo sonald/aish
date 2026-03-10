@@ -8,7 +8,7 @@ English | [简体中文](README_CN.md)
 
 Empower the Shell to think. Evolve Operations.
 
-[![Official Website](https://img.shields.io/badge/Website-aishell.ai-blue.svg)](https://aishell.ai)
+[![Official Website](https://img.shields.io/badge/Website-aishell.ai-blue.svg)](https://www.aishell.ai)
 [![GitHub](https://img.shields.io/badge/GitHub-AI--Shell--Team/aish-black.svg)](https://github.com/AI-Shell-Team/aish/)
 [![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](#)
@@ -317,7 +317,7 @@ Recommendations:
 
 | Link | Description |
 |------|-------------|
-| [Official Website](https://aishell.ai) | Project homepage and more information |
+| [Official Website](https://www.aishell.ai) | Project homepage and more information |
 | [GitHub Repository](https://github.com/AI-Shell-Team/aish/) | Source code and issue tracking |
 | [GitHub Issues](https://github.com/AI-Shell-Team/aish/issues) | Bug reports |
 | [GitHub Discussions](https://github.com/AI-Shell-Team/aish/discussions) | Community discussions |
