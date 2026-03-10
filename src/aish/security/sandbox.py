@@ -1013,7 +1013,7 @@ class SandboxSecurity:
             command = stripped_command
         try:
             sandbox_result = self._executor.simulate(command, cwd=cwd)
-        except SandboxUnavailableError as exc:
+        except SandboxUnavailableError:
             # Disable sandbox for the rest of this process/session to avoid
             # repeated mount/bwrap failures flooding stderr.
             self._enabled = False

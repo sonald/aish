@@ -6,7 +6,6 @@ All escaping and path handling is done by bash directly.
 These tests verify that the command is passed through unchanged.
 """
 
-import pytest
 
 from aish.utils import escape_command_with_paths
 

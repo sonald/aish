@@ -1,11 +1,22 @@
-.PHONY: help install dev test lint format build build-binary build-v20-binary build-ubuntu-binary clean install-binary deploy
+.PHONY: help deps dev test lint format build build-binary install clean
+
+PREFIX ?= /usr
+BINDIR ?= $(PREFIX)/bin
+SYSCONFDIR ?= /etc
+SHAREDIR ?= $(PREFIX)/share
+DATADIR ?= $(SHAREDIR)/aish
+DOCDIR ?= $(SHAREDIR)/doc/aish
+SYSTEMD_UNITDIR ?= /lib/systemd/system
+DESTDIR ?=
+
+NO_BUILD ?= 0
 
 # Default target
 help:
 	@echo "🚀  AI Shell - Make Commands"
 	@echo ""
-	@echo "Development:"
-	@echo "  make install        Install dependencies"
+	@echo "Dependencies:"
+	@echo "  make deps           Install project dependencies"
 	@echo "  make dev            Install dev dependencies"
 	@echo "  make test           Run tests"
 	@echo "  make lint           Run linting"
@@ -13,74 +24,63 @@ help:
 	@echo ""
 	@echo "Building:"
 	@echo "  make build          Build Python wheel"
-	@echo "  make build-binary   Build standalone binary"
-	@echo "  make build-v20-binary   Build V20-style .deb from standalone binary"
-	@echo "  make build-ubuntu-binary Build Ubuntu-style .deb from standalone binary"
+	@echo "  make build-binary   Build standalone binaries"
+	@echo "  make install        Install built artifacts into DESTDIR/PREFIX"
 	@echo "  make clean          Clean build artifacts"
-	@echo ""
-	@echo "Deployment:"
-	@echo "  make install-binary Install binary to /usr/local/bin"
-	@echo "  make deploy         Deploy to remote server (set SERVER env)"
 
-install:
+deps:
 	@echo "📦 Installing dependencies..."
 	uv sync
 
 dev:
 	@echo "📦 Installing dev dependencies..."
-	uv sync --all-extras
+	uv sync --group dev
 
 test:
 	@echo "🧪 Running tests..."
-	uv run pytest tests/ -v
+	uv run --group dev pytest tests/ -v
 
 lint:
 	@echo "🔍 Running linting..."
-	uv run ruff check src/ tests/
-	uv run mypy src/
+	uv run --group dev ruff check src/ tests/
+	uv run --group dev mypy src/
 
 format:
 	@echo "🎨 Formatting code..."
-	uv run ruff format src/ tests/
-	uv run ruff check --fix src/ tests/
+	uv run --group dev ruff format src/ tests/
+	uv run --group dev ruff check --fix src/ tests/
 
 build:
 	@echo "📦 Building Python wheel..."
 	uv build
 
 build-binary:
-	@echo "🔨 Building standalone binary..."
+	@echo "🔨 Building standalone binaries..."
 	./build.sh
 
-# 目前版本使用v20编译通用软件包，暂时不区分系统版本
-build-v20-binary:
-	@echo "📦 Building .deb from standalone binary..."
-	AISH_DEB_REVISION= ./packaging/make_deb_from_pyinstaller.sh --out-dir ./dist-deb-v20
-
-build-ubuntu-binary:
-	@echo "📦 Building Ubuntu .deb from standalone binary..."
-	AISH_DEB_REVISION=ubuntu ./packaging/make_deb_from_pyinstaller.sh --out-dir ./dist-deb-ubuntu
+install:
+	@if [ "$(NO_BUILD)" != "1" ]; then \
+		$(MAKE) build-binary; \
+	fi
+	@echo "📥 Installing built artifacts into $(DESTDIR)"
+	install -d "$(DESTDIR)$(BINDIR)"
+	install -m 0755 dist/aish "$(DESTDIR)$(BINDIR)/aish"
+	install -m 0755 dist/aish-sandbox "$(DESTDIR)$(BINDIR)/aish-sandbox"
+	install -d "$(DESTDIR)$(SYSCONFDIR)/aish"
+	install -m 0644 config/security_policy.yaml "$(DESTDIR)$(SYSCONFDIR)/aish/security_policy.yaml"
+	install -d "$(DESTDIR)$(SYSTEMD_UNITDIR)"
+	install -m 0644 debian/aish-sandbox.service "$(DESTDIR)$(SYSTEMD_UNITDIR)/aish-sandbox.service"
+	install -m 0644 debian/aish-sandbox.socket "$(DESTDIR)$(SYSTEMD_UNITDIR)/aish-sandbox.socket"
+	install -d "$(DESTDIR)$(DOCDIR)"
+	install -m 0644 docs/skills-guide.md "$(DESTDIR)$(DOCDIR)/skills-guide.md"
+	@if [ -d debian/skills ]; then \
+		install -d "$(DESTDIR)$(DATADIR)"; \
+		cp -a debian/skills "$(DESTDIR)$(DATADIR)/"; \
+	fi
 
 clean:
 	@echo "🧹 Cleaning build artifacts..."
-	rm -rf dist/ build/ *.spec.backup __pycache__/ .pytest_cache/
+	rm -rf dist/ build/ .build-venv/ *.spec.backup __pycache__/ .pytest_cache/ prefetched_data/tiktoken_cache/
 	find . -name "*.pyc" -delete
 	find . -name "*.pyo" -delete
 	find . -name "*.egg-info" -exec rm -rf {} +
-
-install-binary: build-binary
-	@echo "📥 Installing binary to /usr/local/bin..."
-	sudo cp dist/aish /usr/local/bin/
-	sudo chmod +x /usr/local/bin/aish
-	@echo "✅ Binary installed! Try: aish --help"
-
-deploy:
-	@if [ -z "$(SERVER)" ]; then \
-		echo "❌ SERVER environment variable not set"; \
-		echo "Usage: make deploy SERVER=user@hostname"; \
-		exit 1; \
-	fi
-	@echo "🚀 Deploying to $(SERVER)..."
-	scp dist/aish $(SERVER):/tmp/
-	ssh $(SERVER) "sudo mv /tmp/aish /usr/local/bin/ && sudo chmod +x /usr/local/bin/aish"
-	@echo "✅ Deployed! Try: ssh $(SERVER) 'aish --help'" 

@@ -10,6 +10,14 @@ from aish.llm import LLMCallbackResult, LLMEvent, LLMEventType
 from aish.shell_enhanced.shell_prompt_io import display_security_panel, handle_ask_user_required
 
 
+def _reset_i18n_cache() -> None:
+    import aish.i18n as i18n
+
+    i18n._UI_LOCALE = None  # type: ignore[attr-defined]
+    i18n._MESSAGES = None  # type: ignore[attr-defined]
+    i18n._MESSAGES_EN = None  # type: ignore[attr-defined]
+
+
 class _DummyShell:
     def __init__(self) -> None:
         self.current_live = None
@@ -80,7 +88,10 @@ def test_handle_ask_user_required_sets_selected_value():
     assert event.data.get("selected_value") == "opt2"
 
 
-def test_display_security_panel_shows_fallback_rule_details():
+def test_display_security_panel_shows_fallback_rule_details(monkeypatch):
+    monkeypatch.setenv("LANG", "zh_CN.UTF-8")
+    _reset_i18n_cache()
+
     shell = _DummyShell()
 
     display_security_panel(
@@ -106,9 +117,12 @@ def test_display_security_panel_shows_fallback_rule_details():
     assert "风险等级" in output
     assert "原因" in output
     assert "系统配置目录，误修改会导致严重故障" in output
+def test_display_security_panel_for_fallback_rule_confirm_hides_generic_fallback_hint(
+    monkeypatch,
+):
+    monkeypatch.setenv("LANG", "zh_CN.UTF-8")
+    _reset_i18n_cache()
 
-
-def test_display_security_panel_for_fallback_rule_confirm_hides_generic_fallback_hint():
     shell = _DummyShell()
 
     display_security_panel(

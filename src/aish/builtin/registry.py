@@ -4,7 +4,7 @@ This module provides a registry of built-in commands that cannot be executed
 with subprocess.run because they require shell state manipulation or PTY.
 """
 
-from typing import Callable, Dict, Optional, Set
+from typing import Dict, Optional, Set
 
 from aish.builtin.handlers import (BuiltinHandlers, BuiltinResult,
                                    DirectoryStack)

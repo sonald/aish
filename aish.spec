@@ -69,8 +69,14 @@ def _filter_linux_toolchain_libs(binaries):
 
     return filtered
 
-# Collect tiktoken data files (now from our pre-fetched cache)
-tiktoken_datas = [('prefetched_data/tiktoken_cache/*', 'tiktoken_cache')]
+# Collect tiktoken data files from the build-time cache.
+tiktoken_cache_root = os.path.join("prefetched_data", "tiktoken_cache")
+if not os.path.isdir(tiktoken_cache_root):
+    raise SystemExit(
+        "Missing build-time tiktoken cache. Run packaging/prefetch_tiktoken_cache.py before PyInstaller."
+    )
+
+tiktoken_datas = [(os.path.join(tiktoken_cache_root, "*"), "tiktoken_cache")]
 
 # Collect litellm tokenizers (for offline token counting)
 litellm_datas = collect_data_files('litellm', includes=['litellm_core_utils/tokenizers/*'])

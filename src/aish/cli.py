@@ -350,7 +350,6 @@ aish run --config ./project-config.yaml --model gpt-4
     """
 
     from rich.markdown import Markdown
-    from rich.panel import Panel
 
     console.print(
         Panel(Markdown(info_text), title="🚀 AI Shell Info", border_style="blue")

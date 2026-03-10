@@ -1,8 +1,11 @@
-#!/bin/bash
-# Build script for  AI Shell binary
-set -e
+#!/usr/bin/env bash
+# Build script for AI Shell binaries
+set -euo pipefail
 
-echo "🚀 Building  AI Shell binary..."
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+echo "🚀 Building AI Shell binaries..."
 
 # Colors for output
 RED='\033[0;31m'
@@ -11,35 +14,51 @@ BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-# Check if we're in the right directory
 if [ ! -f "pyproject.toml" ]; then
     echo -e "${RED}❌ Error: pyproject.toml not found. Please run this script from the project root.${NC}"
     exit 1
 fi
 
-# Ensure uv is installed
-if ! command -v uv &> /dev/null; then
-    echo -e "${RED}❌ Error: uv is not installed. Please install uv first.${NC}"
-    exit 1
+BUILD_VENV="${ROOT_DIR}/.build-venv"
+USE_UV=0
+if command -v uv >/dev/null 2>&1; then
+    USE_UV=1
 fi
 
-# Install dependencies
-echo -e "${BLUE}📦 Installing dependencies...${NC}"
-uv sync
+if [ "$USE_UV" -eq 1 ]; then
+    echo -e "${BLUE}📦 Syncing dependencies with uv...${NC}"
+    uv sync
+    PYTHON_RUN=(uv run python)
+    PYINSTALLER_RUN=(uv run --with pyinstaller pyinstaller)
+else
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo -e "${RED}❌ Error: neither uv nor python3 is available.${NC}"
+        exit 1
+    fi
+
+    echo -e "${BLUE}📦 Creating local build virtualenv...${NC}"
+    python3 -m venv "$BUILD_VENV"
+    "$BUILD_VENV/bin/python" -m pip install --upgrade pip
+    "$BUILD_VENV/bin/python" -m pip install . pyinstaller
+    PYTHON_RUN=("$BUILD_VENV/bin/python")
+    PYINSTALLER_RUN=("$BUILD_VENV/bin/python" -m PyInstaller)
+fi
 
 # Clean previous builds
 echo -e "${YELLOW}🧹 Cleaning previous builds...${NC}"
 rm -rf dist/ build/ *.spec.backup
 
-# Check if PyInstaller is installed
-if ! uv run python -c "import PyInstaller" &> /dev/null; then
-    echo -e "${BLUE}📦 Installing PyInstaller...${NC}"
-    uv add --dev pyinstaller
+if [ "${AISH_CLEAN_TIKTOKEN_CACHE:-0}" = "1" ]; then
+    echo -e "${YELLOW}🧹 Removing cached tiktoken data...${NC}"
+    rm -rf prefetched_data/tiktoken_cache/
 fi
+
+echo -e "${BLUE}🧠 Prefetching tiktoken cache...${NC}"
+"${PYTHON_RUN[@]}" packaging/prefetch_tiktoken_cache.py --cache-dir prefetched_data/tiktoken_cache
 
 # Build using PyInstaller spec file
 echo -e "${BLUE}🔨 Building binary with PyInstaller...${NC}"
-uv run pyinstaller aish.spec
+"${PYINSTALLER_RUN[@]}" aish.spec
 
 # Check if build was successful
 if [ -f "dist/aish" ] && [ -f "dist/aish-sandbox" ]; then

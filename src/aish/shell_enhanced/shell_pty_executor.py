@@ -14,7 +14,6 @@ import threading
 import time
 from typing import Any
 
-import anyio
 from anyio import to_thread
 
 from ..i18n import t

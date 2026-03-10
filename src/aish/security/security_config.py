@@ -9,8 +9,9 @@ from typing import Any, Iterable, Optional
 import yaml
 
 from ..i18n import get_ui_locale
-from .security_policy import (PolicyRule, RiskLevel, SandboxOffAction,
-                              SecurityPolicy)
+from .security_policy import (InvalidFallbackRule, PolicyRule, RiskLevel,
+                              SandboxOffAction, SecurityPolicy,
+                              ValidationIssue)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -339,6 +340,61 @@ def _parse_v2_rules(raw_rules: list[dict[str, Any]]) -> list[PolicyRule]:
     return rules
 
 
+def _parse_invalid_fallback_rules(
+    raw_rules: list[dict[str, Any]],
+) -> tuple[list[InvalidFallbackRule], list[ValidationIssue]]:
+    invalid_rules: list[InvalidFallbackRule] = []
+    issues: list[ValidationIssue] = []
+
+    for item in raw_rules:
+        try:
+            patterns = [str(p) for p in _ensure_list(item.get("path")) if p is not None]
+            if not patterns:
+                continue
+
+            rule_id_raw = item.get("id")
+            rule_id = str(rule_id_raw) if rule_id_raw is not None else None
+            risk_raw = item.get("risk")
+            risk_text = None if risk_raw is None else str(risk_raw)
+
+            try:
+                RiskLevel(str(risk_raw).upper())
+                continue
+            except Exception:
+                pass
+
+            issue = ValidationIssue(
+                rule_id=rule_id,
+                field="risk",
+                value=risk_text,
+                message="invalid rule ignored",
+            )
+            issues.append(issue)
+            _LOGGER.warning(
+                "security_policy: invalid rule ignored; rule_id=%s field=risk value=%s",
+                rule_id or "<unknown>",
+                risk_text,
+            )
+
+            exclude = [
+                str(p) for p in _ensure_list(item.get("exclude")) if p is not None
+            ]
+            for pattern in patterns:
+                if rule_id is None:
+                    continue
+                invalid_rules.append(
+                    InvalidFallbackRule(
+                        rule_id=rule_id,
+                        pattern=pattern,
+                        exclude=exclude or None,
+                    )
+                )
+        except Exception:
+            continue
+
+    return invalid_rules, issues
+
+
 def load_security_policy(config_path: Optional[Path] = None) -> SecurityPolicy:
     """加载安全策略配置。
 
@@ -430,7 +486,16 @@ def load_security_policy(config_path: Optional[Path] = None) -> SecurityPolicy:
 
     # 仅支持 v2：忽略未携带 path 的旧规则形态。
     v2_items = [r for r in raw_rules if isinstance(r, dict) and ("path" in r)]
-    rules.extend(_parse_v2_rules(v2_items))
+    invalid_fallback_rules, validation_issues = _parse_invalid_fallback_rules(v2_items)
+    valid_v2_items: list[dict[str, Any]] = []
+    for item in v2_items:
+        risk_raw = item.get("risk")
+        try:
+            RiskLevel(str(risk_raw).upper())
+            valid_v2_items.append(item)
+        except Exception:
+            continue
+    rules.extend(_parse_v2_rules(valid_v2_items))
 
     return SecurityPolicy(
         enable_sandbox=enable_sandbox,
@@ -439,4 +504,6 @@ def load_security_policy(config_path: Optional[Path] = None) -> SecurityPolicy:
         default_risk_level=default_risk,
         audit_enabled=audit_cfg.enabled,
         audit_log_path=audit_cfg.log_path,
+        invalid_fallback_rules=invalid_fallback_rules,
+        validation_issues=validation_issues,
     )

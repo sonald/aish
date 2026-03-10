@@ -6,7 +6,7 @@ import datetime as dt
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 import anyio
 
@@ -322,7 +322,6 @@ class HistoryManager:
         if row:
             db_id = row[0]
             command = row[1]
-            timestamp = row[2]
 
             # Delete and verify
             self._conn.execute("DELETE FROM command_history WHERE id = ?", (db_id,))

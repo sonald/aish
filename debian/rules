@@ -4,7 +4,7 @@ export DH_VERBOSE=1
 
 # Append build date to the binary package Version (without modifying debian/changelog).
 #
-# Defaults match packaging/make_deb_from_pyinstaller.sh:
+# Defaults:
 #   - AISH_DEB_APPEND_DATE=1  -> append +YYYYMMDD
 #   - AISH_DEB_APPEND_DATE=0  -> keep original changelog version
 #   - AISH_DEB_BUILD_DATE=... -> override date string
@@ -18,9 +18,7 @@ else
 GENCONTROL_DEB_VERSION := $(BASE_DEB_VERSION)+$(AISH_DEB_BUILD_DATE)
 endif
 
-VENDOR_DIR=debian/aish/usr/lib/aish/vendor
-APP_DIR=debian/aish/usr/lib/aish/app
-PIP_VENV=debian/.vendor-pip-venv
+PACKAGE_STAGING=$(CURDIR)/debian/aish
 
 %:
 	dh $@
@@ -32,48 +30,18 @@ override_dh_installsystemd:
 	dh_installsystemd --no-start
 
 override_dh_auto_build:
-	# Traditional deb: no PyInstaller build
-	true
+	$(MAKE) build-binary
 
 override_dh_auto_install:
-	# 1) Install application sources (src layout)
-	rm -f debian/aish-sandbox.install debian/aish-sandbox.postinst debian/aish-sandbox.postrm.debhelper || true
-	install -d $(APP_DIR)
-	cp -a src/aish $(APP_DIR)/
-
-	# 2) Vendor a minimal set of Python packages (keep vendor small)
-	#    - Use a dedicated venv to avoid build-host site-packages affecting pip resolver.
-	install -d $(VENDOR_DIR)
-	rm -rf $(PIP_VENV) $(VENDOR_DIR)/*
-	python3 -m venv $(PIP_VENV)
-	$(PIP_VENV)/bin/python -m pip -q install --upgrade pip
-	# Install only the packages we must ship (no deps); rely on Debian Depends for the rest.
-	$(PIP_VENV)/bin/python -m pip install --no-compile --no-deps --target $(VENDOR_DIR) \
-		"litellm==1.74.3" \
-		"langfuse==2.60.3" \
-		"openai==2.14.0" \
-		"jiter==0.12.0" \
-		"tokenizers==0.22.1" \
-		"jsonschema==4.25.1"
-	# LiteLLM expects parts of litellm.proxy at import time (e.g. litellm.proxy._types).
-	# Keep the proxy Python modules, but drop heavy static assets to reduce size.
-	rm -rf \
-		$(VENDOR_DIR)/litellm/proxy/_experimental/out/assets \
-		$(VENDOR_DIR)/litellm/proxy/_experimental/out/static \
-		$(VENDOR_DIR)/litellm/proxy/swagger \
-		$(VENDOR_DIR)/litellm/proxy/*.jpg \
-		$(VENDOR_DIR)/litellm/proxy/*.png \
-		|| true
-	# Sanity check: ensure proxy types module is present
-	test -f $(VENDOR_DIR)/litellm/proxy/_types.py
-
-	# 3) Force tiktoken to use system package (python3-tiktoken)
-	rm -rf $(VENDOR_DIR)/tiktoken $(VENDOR_DIR)/tiktoken-*.dist-info \
-		$(VENDOR_DIR)/tiktoken_ext $(VENDOR_DIR)/tiktoken_ext-*.dist-info || true
+	rm -rf $(PACKAGE_STAGING)
+	$(MAKE) install NO_BUILD=1 DESTDIR=$(PACKAGE_STAGING) PREFIX=/usr SYSTEMD_UNITDIR=/lib/systemd/system
 
 override_dh_auto_test:
 	# no tests during package build
 	true
+
+override_dh_auto_clean:
+	$(MAKE) clean
 
 override_dh_gencontrol:
 	# Make the .deb version include the build date, similar to other packaging flows.

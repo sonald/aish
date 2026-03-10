@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  UV_CACHE_DIR: .uv-cache
+
+jobs:
+  lint-test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap util-linux
+
+      - name: Sync development dependencies
+        run: uv sync --group dev
+
+      - name: Run lint
+        run: make lint
+
+      - name: Run tests
+        run: make test
+
+      - name: Build Python package
+        run: make build
+
+      - name: Upload Python package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package
+          path: dist/*
+          if-no-files-found: error
+
+  build-binary:
+    name: Build standalone binaries
+    runs-on: ubuntu-latest
+    needs: lint-test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap util-linux
+
+      - name: Build binaries
+        run: make build-binary
+
+      - name: Upload binary artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pyinstaller-binaries
+          path: |
+            dist/aish
+            dist/aish-sandbox
+            prefetched_data/tiktoken_cache/*
+          if-no-files-found: error
+
+  package-deb:
+    name: Build Debian package
+    runs-on: ubuntu-latest
+    needs: build-binary
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            debhelper \
+            dpkg-dev \
+            fakeroot \
+            bubblewrap \
+            util-linux \
+            make
+
+      - name: Build Debian package
+        run: |
+          # CI currently validates Debian packaging on GitHub-hosted runners.
+          # Release-grade binaries that must support older glibc baselines should
+          # later be produced in a dedicated old-glibc build environment.
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            packaging/build_deb.sh --release
+          else
+            packaging/build_deb.sh
+          fi
+
+      - name: Collect Debian artifacts
+        run: |
+          mkdir -p artifacts/deb
+          find .. -maxdepth 1 -type f \( \
+            -name 'aish_*.deb' -o \
+            -name 'aish_*.buildinfo' -o \
+            -name 'aish_*.changes' \
+          \) -exec mv -t artifacts/deb {} +
+          ls -lah artifacts/deb
+
+      - name: Upload Debian artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-package
+          path: artifacts/deb/*
+          if-no-files-found: error

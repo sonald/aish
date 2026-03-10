@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import getpass
 import io
 import json
 import os
@@ -23,7 +22,7 @@ from rich.table import Table
 from ..config import Config, ConfigModel
 from ..i18n import t
 from ..litellm_loader import load_litellm, preload_litellm
-from .constants import (_AI_GATEWAY_DEFAULT_MODEL, _HUGGINGFACE_DEFAULT_MODEL,
+from .constants import (_HUGGINGFACE_DEFAULT_MODEL,
                         _KILOCODE_DEFAULT_MODEL, _MISTRAL_DEFAULT_MODEL,
                         _OLLAMA_DEFAULT_MODEL, _QIANFAN_MODELS,
                         _QWEN_DEFAULT_MODEL, _STATIC_FILTER_SKIP_PROVIDERS,
@@ -32,13 +31,12 @@ from .constants import (_AI_GATEWAY_DEFAULT_MODEL, _HUGGINGFACE_DEFAULT_MODEL,
 from .helpers import (_ask_value, _display_width, _is_blank, _is_valid_url,
                       _mask_secret, _matches_filter_query,
                       _prompt_secret_with_mask, _sanitize_filter_input)
-from .provider_helpers import (get_default_model_for_endpoint,
-                               get_provider_endpoints, get_provider_models,
-                               has_multi_endpoints)
+from .provider_helpers import (ProviderEndpointInfo, get_provider_endpoints,
+                               get_provider_models, has_multi_endpoints)
 from .providers import (_filter_provider_options, _get_provider_options,
                         _maybe_resolve_api_base, _provider_note,
                         _with_api_base)
-from .types import ConnectivityResult, ProviderOption, ToolSupportResult
+from .types import ProviderOption, ToolSupportResult
 from .verification import (_check_tool_support, _quick_static_check,
                            _status_text, build_failure_reason,
                            run_verification)
@@ -115,7 +113,7 @@ def _select_provider_realtime(
         start, end = _resolve_list_viewport(len(filtered), selected_index)
         lines: list[tuple[str, str]] = []
         if start > 0:
-            lines.append(("class:hint", f"..."))
+            lines.append(("class:hint", "..."))
             lines.append(("", "\n"))
 
         for idx in range(start, end):
@@ -129,7 +127,7 @@ def _select_provider_realtime(
 
         if end < len(filtered):
             lines.append(("", "\n"))
-            lines.append(("class:hint", f"..."))
+            lines.append(("class:hint", "..."))
         return lines
 
     app_ref: dict[str, Application | None] = {"app": None}
@@ -318,7 +316,6 @@ def _select_provider_endpoint(
     base_provider: ProviderOption,
 ) -> Optional[ProviderOption]:
     """Show endpoint selection for providers with multiple endpoints."""
-    from .provider_helpers import ProviderEndpointInfo
 
     endpoints = get_provider_endpoints(base_provider.key)
 
@@ -392,7 +389,7 @@ def _select_endpoint_realtime(
         start, end = _resolve_list_viewport(len(filtered), selected_index)
         lines: list[tuple[str, str]] = []
         if start > 0:
-            lines.append(("class:hint", f"..."))
+            lines.append(("class:hint", "..."))
             lines.append(("", "\n"))
 
         for idx in range(start, end):
@@ -404,7 +401,7 @@ def _select_endpoint_realtime(
 
         if end < len(filtered):
             lines.append(("", "\n"))
-            lines.append(("class:hint", f"..."))
+            lines.append(("class:hint", "..."))
         return lines
 
     app_ref: dict[str, Application | None] = {"app": None}
@@ -991,7 +988,7 @@ def _select_model_realtime(
 
         if end < len(filtered):
             lines.append(("", "\n"))
-            lines.append(("class:hint", f"..."))
+            lines.append(("class:hint", "..."))
         return lines
 
     app_ref: dict[str, Application | None] = {"app": None}
@@ -1236,7 +1233,6 @@ def _select_action_realtime(options: list[tuple[str, str]]) -> str:
     """Select an action from a list using arrow keys."""
     try:
         from prompt_toolkit import Application
-        from prompt_toolkit.formatted_text import ANSI
         from prompt_toolkit.key_binding import KeyBindings
         from prompt_toolkit.layout import HSplit, Layout, Window
         from prompt_toolkit.layout.controls import FormattedTextControl

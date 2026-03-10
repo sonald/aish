@@ -8,9 +8,7 @@ import getpass
 import json
 import logging
 import os
-import pty
 import re
-import select
 import shlex
 import signal
 import subprocess
@@ -20,8 +18,6 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 from textwrap import dedent
 from typing import Any, Optional
@@ -29,20 +25,15 @@ from typing import Any, Optional
 import anyio
 from anyio import to_thread
 from prompt_toolkit import PromptSession
-from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-from prompt_toolkit.completion import Completer, Completion, NestedCompleter
-from prompt_toolkit.document import Document
 from prompt_toolkit.history import FileHistory
-from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 
-from .builtin import (BuiltinHandlers, BuiltinRegistry, BuiltinResult,
-                      DirectoryStack)
+from .builtin import (BuiltinHandlers, DirectoryStack)
 from .cancellation import CancellationReason
 from .command import CommandDispatcher
 from .config import (Config, ConfigModel, ToolArgPreviewSettings,
@@ -52,14 +43,36 @@ from .env_manager import EnvironmentManager
 from .help_manager import HelpManager
 from .history_manager import HistoryManager
 from .i18n import t
-from .interruption import (InterruptAction, InterruptionManager, PromptConfig,
+from .interruption import (InterruptionManager, PromptConfig,
                            ShellState)
 from .llm import LLMCallbackResult, LLMEvent, LLMEventType, LLMSession
 from .logging_utils import set_session_uuid
-from .offload.pty_output_offload import PtyOutputOffload
 from .prompts import PromptManager
 from .security.security_manager import SimpleSecurityManager
 from .session_store import SessionRecord, SessionStore
+from .shell_enhanced.shell_actions import build_default_actions
+from .shell_enhanced.shell_command_service import ShellCommandService
+from .shell_enhanced.shell_completion import (_SKILL_REF_EXTRACT_RE,
+                                              ModeAwareCompleter,
+                                              SkillReferenceCompleter,
+                                              make_shell_completer)
+from .shell_enhanced.shell_input_router import ShellInputRouter
+from .shell_enhanced.shell_llm_events import LLMEventRouter
+from .shell_enhanced.shell_prompt_io import \
+    display_security_panel as _prompt_display_security_panel
+from .shell_enhanced.shell_prompt_io import \
+    get_user_confirmation as _prompt_get_user_confirmation
+from .shell_enhanced.shell_prompt_io import \
+    get_user_input as _prompt_get_user_input
+from .shell_enhanced.shell_prompt_io import \
+    handle_ask_user_required as _prompt_handle_ask_user_required
+from .shell_enhanced.shell_prompt_io import \
+    handle_tool_confirmation_required as \
+    _prompt_handle_tool_confirmation_required
+from .shell_enhanced.shell_pty_executor import \
+    execute_command_with_pty as _execute_command_with_pty_impl
+from .shell_enhanced.shell_types import (ActionContext, CommandResult,
+                                         CommandStatus, InputIntent)
 from .skills import SkillManager
 from .skills.hotreload import SkillHotReloadService
 from .utils import (get_current_env_info, get_or_fetch_static_env_info,
@@ -94,33 +107,6 @@ def _build_passthrough_stdin_termios(settings: list[Any]) -> list[Any]:
     new_settings[6][termios.VMIN] = 1
     new_settings[6][termios.VTIME] = 0
     return new_settings
-
-
-from .shell_enhanced.shell_actions import build_default_actions
-from .shell_enhanced.shell_command_service import ShellCommandService
-from .shell_enhanced.shell_completion import (_SKILL_REF_EXTRACT_RE,
-                                              ModeAwareCompleter,
-                                              QuotedPathCompleter,
-                                              SkillReferenceCompleter,
-                                              make_shell_completer)
-from .shell_enhanced.shell_input_router import ShellInputRouter
-from .shell_enhanced.shell_llm_events import LLMEventRouter
-from .shell_enhanced.shell_prompt_io import \
-    display_security_panel as _prompt_display_security_panel
-from .shell_enhanced.shell_prompt_io import \
-    get_user_confirmation as _prompt_get_user_confirmation
-from .shell_enhanced.shell_prompt_io import \
-    get_user_input as _prompt_get_user_input
-from .shell_enhanced.shell_prompt_io import \
-    handle_ask_user_required as _prompt_handle_ask_user_required
-from .shell_enhanced.shell_prompt_io import \
-    handle_tool_confirmation_required as \
-    _prompt_handle_tool_confirmation_required
-from .shell_enhanced.shell_pty_executor import \
-    execute_command_with_pty as _execute_command_with_pty_impl
-from .shell_enhanced.shell_types import (ActionContext, ActionOutcome,
-                                         CommandResult, CommandStatus,
-                                         InputIntent)
 
 
 class AIShell:
@@ -166,6 +152,8 @@ class AIShell:
         # Create a new persisted session record for each shell start.
         self.session_record: SessionRecord | None = None
         self._create_new_session_record()
+        if self.session_record is None:
+            raise RuntimeError("Failed to create session record")
         if self.session_record:
             set_session_uuid(self.session_record.session_uuid)
 
@@ -667,7 +655,7 @@ class AIShell:
         try:
             # Check for state-modifying built-in commands first
             # These need special handling and cannot be executed with subprocess
-            from aish.builtin import BuiltinRegistry, BuiltinResult
+            from aish.builtin import BuiltinRegistry
 
             if BuiltinRegistry.is_state_modifying_command(command):
                 # Handle built-in commands directly
@@ -773,7 +761,7 @@ class AIShell:
         self, command: str, record_history: bool = True
     ) -> CommandResult:
         """Execute a built-in command (cd, pushd, popd, export, unset, dirs, pwd, history)."""
-        from aish.builtin import BuiltinHandlers, BuiltinRegistry
+        from aish.builtin import BuiltinHandlers
         from aish.tools.bash_executor import UnifiedBashExecutor
 
         cmd_parts = command.strip().split()
@@ -1959,7 +1947,6 @@ class AIShell:
             parts = shlex.split(user_input)
 
             # Parse options
-            unset_var = False
             unset_func = False
             unset_ref = False
             var_names = []
@@ -1975,7 +1962,6 @@ class AIShell:
                     i += 1
                     break
                 elif arg == "-v":
-                    unset_var = True
                     i += 1
                 elif arg == "-f":
                     unset_func = True

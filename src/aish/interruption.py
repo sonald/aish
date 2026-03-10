@@ -161,11 +161,11 @@ class InterruptionManager:
 
         # 根据 AI 执行状态返回不同的提示
         if current_state == ShellState.AI_THINKING:
-            return f"<gray>&lt;Interrupted received.&gt;</gray>"
+            return "<gray>&lt;Interrupted received.&gt;</gray>"
         elif current_state == ShellState.SANDBOX_EVAL:
-            return f"<gray>&lt;Stopping... finalizing current task.&gt;</gray>"
+            return "<gray>&lt;Stopping... finalizing current task.&gt;</gray>"
         elif current_state == ShellState.COMMAND_EXEC:
-            return f"<gray>&lt;Stopping... finishing current task (this may take a moment)&gt;</gray>"
+            return "<gray>&lt;Stopping... finishing current task (this may take a moment)&gt;</gray>"
 
         return None
 

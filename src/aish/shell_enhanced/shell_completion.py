@@ -175,7 +175,6 @@ class QuotedPathCompleter(Completer):
 
                 # Get directory part and filename part from expanded path
                 dir_path = os.path.dirname(expanded_path)
-                file_prefix_expanded = os.path.basename(expanded_path)
 
                 # If no directory part, use current directory
                 if not dir_path:
@@ -575,9 +574,7 @@ class ModeAwareCompleter(Completer):
 
     def _print_with_pager(self, items: list[str]) -> None:
         """Print items using a pager (like more) for large lists."""
-        import subprocess
         import sys
-        import tempfile
 
         def _print():
             # Build columnated output
@@ -722,7 +719,6 @@ def make_shell_completer():
 
             # Calculate the stripped text by removing sudo prefixes
             # Find the position after all sudo prefixes and their following spaces
-            import shlex
 
             try:
                 # Use shlex.split to find the end position of each sudo token
@@ -906,14 +902,9 @@ def make_shell_completer():
 
                 # Find current argument to complete (last non-empty argument)
                 current_arg = ""
-                arg_start_pos = 0
 
                 if parsed_parts:
                     current_arg = parsed_parts[-1]
-                    # Calculate start position of current argument in original text
-                    if len(parsed_parts) > 1:
-                        # Find start position of last argument
-                        arg_start_pos = len(text) - len(current_arg)
 
                     # If current argument is empty (like "rm -f " case), use current directory
                     if not current_arg.strip():

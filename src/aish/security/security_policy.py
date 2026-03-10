@@ -31,6 +31,25 @@ class SandboxOffAction(str, Enum):
     BLOCK = "BLOCK"  # 直接阻断
 
 
+@dataclass(frozen=True)
+class ValidationIssue:
+    """配置校验问题。"""
+
+    rule_id: str | None
+    field: str
+    value: str | None = None
+    message: str | None = None
+
+
+@dataclass(frozen=True)
+class InvalidFallbackRule:
+    """用于沙箱关闭场景的失效规则占位。"""
+
+    rule_id: str
+    pattern: str
+    exclude: Optional[list[str]] = None
+
+
 @dataclass
 class PolicyRule:
     """单条路径风险规则。
@@ -68,10 +87,17 @@ class SecurityPolicy:
     default_risk_level: RiskLevel = RiskLevel.LOW
     audit_enabled: bool = False
     audit_log_path: Optional[str] = None
+    invalid_fallback_rules: List[InvalidFallbackRule] | None = None
+    validation_issues: List[ValidationIssue] | None = None
 
     @staticmethod
     def default() -> "SecurityPolicy":
-        return SecurityPolicy(enable_sandbox=False, rules=list(_DEFAULT_RULES))
+        return SecurityPolicy(
+            enable_sandbox=False,
+            rules=list(_DEFAULT_RULES),
+            invalid_fallback_rules=[],
+            validation_issues=[],
+        )
 
     def match(self, path: str, operation: Optional[str]) -> Optional[PolicyRule]:
         """按顺序匹配 (path, operation)，返回第一条命中的规则。
@@ -232,6 +258,8 @@ class AiRiskEngine:
 
 __all__ = [
     "RiskLevel",
+    "ValidationIssue",
+    "InvalidFallbackRule",
     "PolicyRule",
     "SecurityPolicy",
     "load_policy",

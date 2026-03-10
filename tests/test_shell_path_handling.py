@@ -4,9 +4,8 @@ Tests for AI shell's own command handling with paths containing spaces and speci
 
 import os
 import tempfile
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import anyio
 import pytest
 
 from aish.config import ConfigModel

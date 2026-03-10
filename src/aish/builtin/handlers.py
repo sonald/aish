@@ -87,7 +87,6 @@ class BuiltinHandlers:
         original_dir = cwd
 
         # Parse options (following handle_export pattern)
-        logical_mode = True  # Default to -L (logical mode)
         physical_mode = False
         strict_check = False  # -e flag
         disable_options = False
@@ -102,12 +101,10 @@ class BuiltinHandlers:
                 i += 1
                 break
             elif arg == "-L":
-                logical_mode = True
                 physical_mode = False
                 i += 1
             elif arg == "-P":
                 physical_mode = True
-                logical_mode = False
                 i += 1
             elif arg == "-e":
                 strict_check = True
@@ -122,11 +119,9 @@ class BuiltinHandlers:
                     invalid_char = None
                     for char in opt_chars:
                         if char == "L":
-                            logical_mode = True
                             physical_mode = False
                         elif char == "P":
                             physical_mode = True
-                            logical_mode = False
                         elif char == "e":
                             strict_check = True
                         elif char == "@":
@@ -238,14 +233,14 @@ class BuiltinHandlers:
                     return BuiltinResult(
                         success=False,
                         output="",
-                        error=f"cd: cannot determine current directory",
+                        error="cd: cannot determine current directory",
                         returncode=1,
                     )
             except Exception:
                 return BuiltinResult(
                     success=False,
                     output="",
-                    error=f"cd: cannot determine current directory",
+                    error="cd: cannot determine current directory",
                     returncode=1,
                 )
 
@@ -593,7 +588,6 @@ class BuiltinHandlers:
             parts = shlex.split(command)
 
             # Parse options
-            unset_var = False
             unset_func = False
             unset_ref = False
             var_names = []
@@ -608,7 +602,6 @@ class BuiltinHandlers:
                     i += 1
                     break
                 elif arg == "-v":
-                    unset_var = True
                     i += 1
                 elif arg == "-f":
                     unset_func = True

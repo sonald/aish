@@ -5,7 +5,6 @@ from __future__ import annotations
 import shlex
 from typing import TYPE_CHECKING, Any
 
-import anyio
 
 from ..builtin import BuiltinRegistry
 from ..command import CommandDispatcher

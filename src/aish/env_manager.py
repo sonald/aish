@@ -1,10 +1,8 @@
-"""
-Environment Manager for AI Shell - Manages environment variables with export functionality
-"""
+"""Environment Manager for AI Shell - Manages environment variables."""
 
 import os
 import subprocess
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 
 class EnvironmentManager:
@@ -20,7 +18,7 @@ class EnvironmentManager:
 
         # Directory stack for pushd/popd commands
         # This is shared between AIShell and BashTool
-        self.directory_stack = None  # Will be set by AIShell
+        self.directory_stack: Any | None = None  # Will be set by AIShell
 
     def _load_system_env(self):
         """Load system environment variables into internal storage"""

@@ -1,7 +1,0 @@
-config/security_policy.yaml etc/aish/
-debian/bin/aish usr/bin/
-debian/bin/aish-sandbox usr/bin/
-debian/aish-sandbox.service lib/systemd/system/
-debian/aish-sandbox.socket lib/systemd/system/
-docs/skills-guide.md usr/share/doc/aish/
-debian/skills usr/share/aish/

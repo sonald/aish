@@ -161,7 +161,6 @@ class UnifiedBashExecutor:
         import pty
         import select
         import signal
-        import time
 
         wrapped_command = wrap_command_with_state_capture(command, state_file)
 

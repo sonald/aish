@@ -7,9 +7,8 @@ from typing import ClassVar, Optional
 
 from aish.builtin import BuiltinRegistry
 from aish.config import BashOutputOffloadSettings
-from aish.history_manager import HistoryManager
 from aish.i18n import t
-from aish.interruption import InterruptionManager, ShellState
+from aish.interruption import ShellState
 from aish.offload import render_bash_output
 from aish.security.security_manager import (SecurityDecision,
                                             SimpleSecurityManager)
@@ -50,7 +49,6 @@ class PythonTool(ToolBase):
 
     def __call__(self, code: str) -> ToolResult:
         import io
-        import sys
 
         # Save and set current working directory for Python execution
         original_cwd = os.getcwd()

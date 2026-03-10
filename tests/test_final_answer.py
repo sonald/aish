@@ -7,7 +7,7 @@ This module implements the test requirements from Step 6:
 3. End-to-end: run a dummy query via outer LLMSession; verify nested agent executes and returns
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
