@@ -1,4 +1,4 @@
-.PHONY: help deps dev test lint format build build-binary install clean
+.PHONY: help deps dev test lint format build build-binary build-bundle install clean
 
 PREFIX ?= /usr
 BINDIR ?= $(PREFIX)/bin
@@ -25,6 +25,7 @@ help:
 	@echo "Building:"
 	@echo "  make build          Build Python wheel"
 	@echo "  make build-binary   Build standalone binaries"
+	@echo "  make build-bundle   Build release bundle archive"
 	@echo "  make install        Install built artifacts into DESTDIR/PREFIX"
 	@echo "  make clean          Clean build artifacts"
 
@@ -57,6 +58,10 @@ build:
 build-binary:
 	@echo "🔨 Building standalone binaries..."
 	./build.sh
+
+build-bundle:
+	@echo "📦 Building release bundle..."
+	./packaging/build_bundle.sh
 
 install:
 	@if [ "$(NO_BUILD)" != "1" ]; then \

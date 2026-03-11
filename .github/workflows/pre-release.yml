@@ -1,0 +1,56 @@
+name: Pre-release Package Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version for dry-run packaging (for example 0.1.0)
+        required: false
+        default: 0.1.0
+
+permissions:
+  contents: read
+
+env:
+  UV_CACHE_DIR: .uv-cache
+
+jobs:
+  prerelease-dry-run:
+    name: Build bundle (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runs_on: ubuntu-latest
+          - arch: arm64
+            runs_on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs_on }}
+    container:
+      image: rockylinux:8
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up build environment
+        run: ./packaging/scripts/setup-ci-env.sh
+
+      - name: Build bundle
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          VERSION="${INPUT_VERSION:-0.1.0}"
+          OUTPUT_DIR="artifacts/${{ matrix.arch }}"
+          VERSION="$VERSION" ARCH="${{ matrix.arch }}" OUTPUT_DIR="$OUTPUT_DIR" ./packaging/build_bundle.sh
+          ls -lah "$OUTPUT_DIR"
+
+      - name: Upload dry-run artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: prerelease-bundle-${{ matrix.arch }}
+          path: artifacts/${{ matrix.arch }}/*
+          if-no-files-found: error
