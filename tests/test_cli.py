@@ -1,5 +1,6 @@
 """Tests for CLI functionality."""
 
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from typer.testing import CliRunner
@@ -7,6 +8,7 @@ from typer.testing import CliRunner
 from aish.cli import app, run
 from aish.config import ConfigModel
 from aish.i18n import t
+from aish.openai_codex import OpenAICodexAuthError
 
 
 class TestCLI:
@@ -208,3 +210,125 @@ class TestCLI:
         assert t("cli.setup.cancelled") in result.output
         mock_config_class.assert_called_once()
         mock_run_interactive_setup.assert_called_once_with(mock_config)
+
+    @patch("aish.cli.Config")
+    @patch("aish.cli.load_openai_codex_auth")
+    def test_models_auth_login_sets_default_openai_codex_model(
+        self, mock_load_openai_codex_auth, mock_config_class
+    ):
+        """Codex auth login should persist auth path and default model."""
+        mock_config = Mock()
+        mock_config.model_config = ConfigModel(model="openai/gpt-4o", api_key="k")
+        mock_config_class.return_value = mock_config
+        mock_load_openai_codex_auth.return_value = Mock(
+            auth_path=Path("/tmp/codex-auth.json")
+        )
+
+        result = self.runner.invoke(
+            app,
+            ["models", "auth", "login", "--provider", "openai-codex"],
+        )
+
+        assert result.exit_code == 0
+        assert mock_config.config_model.model == "openai-codex/gpt-5.4"
+        assert mock_config.config_model.api_key is None
+        assert mock_config.config_model.codex_auth_path == "/tmp/codex-auth.json"
+        mock_config.save_config.assert_called_once()
+
+    @patch("aish.cli.Config")
+    @patch("aish.cli.load_openai_codex_auth")
+    def test_models_auth_login_without_default_keeps_existing_api_key(
+        self, mock_load_openai_codex_auth, mock_config_class
+    ):
+        """Codex auth login should not clear the current provider config when not switching defaults."""
+        mock_config = Mock()
+        mock_config.model_config = ConfigModel(model="openai/gpt-4o", api_key="k")
+        mock_config_class.return_value = mock_config
+        mock_load_openai_codex_auth.return_value = Mock(
+            auth_path=Path("/tmp/codex-auth.json")
+        )
+
+        result = self.runner.invoke(
+            app,
+            [
+                "models",
+                "auth",
+                "login",
+                "--provider",
+                "openai-codex",
+                "--no-set-default",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert mock_config.config_model.model == "openai/gpt-4o"
+        assert mock_config.config_model.api_key == "k"
+        assert mock_config.config_model.codex_auth_path == "/tmp/codex-auth.json"
+        mock_config.save_config.assert_called_once()
+
+    @patch("aish.cli.Config")
+    @patch("aish.cli.login_openai_codex_with_browser")
+    @patch("aish.cli.load_openai_codex_auth")
+    def test_models_auth_login_uses_builtin_browser_flow_by_default(
+        self,
+        mock_load_openai_codex_auth,
+        mock_login_browser,
+        mock_config_class,
+    ):
+        """Codex auth login should use the built-in browser flow by default."""
+        mock_config = Mock()
+        mock_config.model_config = ConfigModel(model="openai/gpt-4o", api_key="k")
+        mock_config_class.return_value = mock_config
+        mock_load_openai_codex_auth.side_effect = OpenAICodexAuthError("missing")
+        mock_login_browser.return_value = Mock(auth_path=Path("/tmp/codex-auth.json"))
+
+        result = self.runner.invoke(
+            app,
+            [
+                "models",
+                "auth",
+                "login",
+                "--provider",
+                "openai-codex",
+                "--no-open-browser",
+            ],
+        )
+
+        assert result.exit_code == 0
+        mock_login_browser.assert_called_once()
+        assert mock_login_browser.call_args.kwargs["open_browser"] is False
+        assert mock_login_browser.call_args.kwargs["auth_path"] is None
+
+    @patch("aish.cli.Config")
+    @patch("aish.cli.login_openai_codex_with_device_code")
+    @patch("aish.cli.load_openai_codex_auth")
+    def test_models_auth_login_supports_device_code_flow(
+        self,
+        mock_load_openai_codex_auth,
+        mock_login_device_code,
+        mock_config_class,
+    ):
+        """Codex auth login should support the built-in device-code flow."""
+        mock_config = Mock()
+        mock_config.model_config = ConfigModel(model="openai/gpt-4o", api_key="k")
+        mock_config_class.return_value = mock_config
+        mock_load_openai_codex_auth.side_effect = OpenAICodexAuthError("missing")
+        mock_login_device_code.return_value = Mock(
+            auth_path=Path("/tmp/codex-auth.json")
+        )
+
+        result = self.runner.invoke(
+            app,
+            [
+                "models",
+                "auth",
+                "login",
+                "--provider",
+                "openai-codex",
+                "--auth-flow",
+                "device-code",
+            ],
+        )
+
+        assert result.exit_code == 0
+        mock_login_device_code.assert_called_once()

@@ -17,6 +17,8 @@ from aish.exception import is_litellm_exception, redact_secrets
 from aish.i18n import t
 from aish.interruption import ShellState
 from aish.litellm_loader import load_litellm
+from aish.openai_codex import (create_openai_codex_chat_completion,
+                               is_openai_codex_model)
 from aish.prompts import PromptManager
 from aish.skills import SkillManager
 from aish.tools.base import ToolBase
@@ -445,6 +447,39 @@ class LLMSession:
             self._stream_chunk_builder_func = litellm.stream_chunk_builder
         return self._stream_chunk_builder_func
 
+    def _uses_openai_codex(self) -> bool:
+        return is_openai_codex_model(self.model)
+
+    async def _create_completion_response(
+        self,
+        *,
+        messages: list[dict],
+        stream: bool,
+        tools: Optional[list[dict]] = None,
+        tool_choice: str = "auto",
+        **kwargs,
+    ):
+        if self._uses_openai_codex():
+            return await create_openai_codex_chat_completion(
+                model=self.model,
+                messages=messages,
+                tools=tools,
+                tool_choice=tool_choice,
+                api_base=self.api_base,
+                auth_path=getattr(self.config, "codex_auth_path", None),
+                timeout=float(kwargs.get("timeout", 300)),
+            )
+
+        acompletion = self._get_acompletion()
+        return await acompletion(
+            model=self.model,
+            api_base=self.api_base,
+            api_key=self.api_key,
+            messages=messages,
+            stream=stream,
+            **kwargs,
+        )
+
     def update_model(
         self,
         model: str,
@@ -469,6 +504,9 @@ class LLMSession:
 
     async def _background_initialize(self):
         """后台初始化 litellm 模块，使用独立线程避免阻塞事件循环"""
+        if self._uses_openai_codex():
+            return
+
         async with self._init_lock:
             if self._initialized:
                 return
@@ -533,6 +571,9 @@ class LLMSession:
 
     async def _ensure_initialized(self):
         """确保 litellm 已初始化，等待后台初始化完成"""
+        if self._uses_openai_codex():
+            return
+
         # 如果已经初始化完成，直接返回
         if self._initialized:
             return
@@ -575,7 +616,7 @@ class LLMSession:
             max_retries: 最大重试次数，默认 5 次
             retry_delay: 重试间隔（秒），默认 0.5 秒
         """
-        if self._initialized:
+        if self._uses_openai_codex() or self._initialized:
             return
 
         last_error = None
@@ -1064,7 +1105,8 @@ class LLMSession:
 
     def _trim_messages(self, messages: list[dict]) -> list[dict]:
         """Trim messages to keep under token limit"""
-        # return messages
+        if self._uses_openai_codex():
+            return messages
         old_size = len(messages)
         trim_messages = self._get_trim_messages()
         new_messages = trim_messages(messages, model=self.model)
@@ -1320,9 +1362,10 @@ class LLMSession:
                         stream = bool(merged_kwargs.pop("stream"))
                     except Exception:
                         merged_kwargs.pop("stream")
+                actual_stream = stream and not self._uses_openai_codex()
 
                 events.emit_generation_start(
-                    generation_type=generation_type, stream=stream
+                    generation_type=generation_type, stream=actual_stream
                 )
 
                 # Get Langfuse metadata
@@ -1347,19 +1390,15 @@ class LLMSession:
                         ):
                             raise anyio.get_cancelled_exc_class()
 
-                        acompletion = self._get_acompletion()
-                        response = await acompletion(
-                            model=self.model,
-                            api_base=self.api_base,
-                            api_key=self.api_key,
+                        response = await self._create_completion_response(
                             messages=messages,
                             tools=tools_spec,
                             tool_choice="auto",
-                            stream=stream,
+                            stream=actual_stream,
                             **merged_kwargs,
                         )
 
-                        if stream:
+                        if actual_stream:
                             content_acc = ""
                             reasoning_acc = ""
                             stream_chunks: list[object] = []
@@ -1543,7 +1582,7 @@ class LLMSession:
 
                 content = msg.get("content")
                 if content:
-                    if stream:
+                    if actual_stream:
                         if has_tool_calls and not content_preview_started:
                             events.emit_content_delta(
                                 delta=content, accumulated=content, is_final=False
@@ -1573,7 +1612,7 @@ class LLMSession:
                         tool_calls, context_manager, system_message, output
                     )
 
-                if not stream:
+                if not actual_stream:
                     events.emit_generation_end(
                         status="success", finish_reason=finish_reason
                     )
@@ -1643,7 +1682,10 @@ class LLMSession:
         elif langfuse_metadata:
             merged_kwargs["metadata"] = langfuse_metadata
 
-        events.emit_generation_start(generation_type=generation_type, stream=stream)
+        actual_stream = stream and not self._uses_openai_codex()
+        events.emit_generation_start(
+            generation_type=generation_type, stream=actual_stream
+        )
 
         result = ""
         try:
@@ -1651,17 +1693,13 @@ class LLMSession:
             if self.cancellation_token and self.cancellation_token.is_cancelled():
                 raise anyio.get_cancelled_exc_class()
 
-            acompletion = self._get_acompletion()
-            response = await acompletion(
-                model=self.model,
-                api_base=self.api_base,
-                api_key=self.api_key,
+            response = await self._create_completion_response(
                 messages=messages,
-                stream=stream,
+                stream=actual_stream,
                 **merged_kwargs,
             )
 
-            if stream:
+            if actual_stream:
                 reasoning_acc = ""
                 finish_reason = None
                 generation_status = "success"

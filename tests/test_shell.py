@@ -143,6 +143,30 @@ class TestAIShell:
 
         assert shell.llm_session.model == "test-model"
 
+    @pytest.mark.asyncio
+    async def test_model_command_switches_to_openai_codex_without_verification(self):
+        """/model should allow OpenAI Codex after local auth validation."""
+        config = ConfigModel(
+            model="test-model",
+            api_key="test-key",
+            codex_auth_path="/tmp/codex-auth.json",
+        )
+        shell = make_shell(config)
+
+        with (
+            patch("aish.shell.load_openai_codex_auth", return_value=Mock()),
+            patch(
+                "aish.wizard.verification.run_verification_async",
+                new_callable=AsyncMock,
+            ) as mock_verify,
+        ):
+            await shell.handle_model_command("/model openai-codex/gpt-5.4")
+
+        assert shell.llm_session.model == "openai-codex/gpt-5.4"
+        assert shell.context_manager.model == "openai-codex/gpt-5.4"
+        assert shell.config.model == "openai-codex/gpt-5.4"
+        mock_verify.assert_not_called()
+
     def test_init_creates_session_record(self, tmp_path):
         """Each shell start should create a new persisted session record."""
         db_path = tmp_path / "sessions.db"
