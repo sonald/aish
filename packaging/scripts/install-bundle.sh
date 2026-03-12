@@ -91,6 +91,14 @@ check_runtime_dependencies() {
 	fi
 }
 
+binary_target_dir() {
+	if [[ -n "$INSTALL_PREFIX" ]]; then
+		printf '%s\n' "/usr/local/bin"
+	else
+		printf '%s\n' "/usr/local/bin"
+	fi
+}
+
 install_file() {
 	local source_path="$1"
 	local destination_path
@@ -124,6 +132,23 @@ install_tree() {
 	if ! cp -a "$source_dir/." "$destination_dir/" 2>/dev/null; then
 		echo "Warning: Failed to copy files from $source_dir to $destination_dir" >&2
 		return 0
+	fi
+}
+
+install_systemd_unit() {
+	local source_path="$1"
+	local destination_path="$2"
+	local destination_file
+	destination_file="$(target_path "$destination_path")"
+	local service_exec_path
+	service_exec_path="$(binary_target_dir)/aish-sandbox"
+
+	install -d "$(dirname "$destination_file")"
+	if [[ "$source_path" == *.service ]]; then
+		sed "s|^ExecStart=/usr/bin/aish-sandbox$|ExecStart=${service_exec_path}|" "$source_path" > "$destination_file"
+		chmod 0644 "$destination_file"
+	else
+		install -m 0644 "$source_path" "$destination_file"
 	fi
 }
 
@@ -167,12 +192,14 @@ require_root
 check_glibc
 check_runtime_dependencies
 
-install_file "$ROOTFS_DIR/usr/bin/aish" "/usr/local/bin/aish" 0755
-install_file "$ROOTFS_DIR/usr/bin/aish-sandbox" "/usr/local/bin/aish-sandbox" 0755
+BIN_DIR="$(binary_target_dir)"
+
+install_file "$ROOTFS_DIR/usr/bin/aish" "${BIN_DIR}/aish" 0755
+install_file "$ROOTFS_DIR/usr/bin/aish-sandbox" "${BIN_DIR}/aish-sandbox" 0755
 install_config "$ROOTFS_DIR/etc/aish/security_policy.yaml" "/etc/aish/security_policy.yaml"
 if [[ -z "$INSTALL_PREFIX" ]]; then
-	install_file "$ROOTFS_DIR/lib/systemd/system/aish-sandbox.service" "/etc/systemd/system/aish-sandbox.service" 0644
-	install_file "$ROOTFS_DIR/lib/systemd/system/aish-sandbox.socket" "/etc/systemd/system/aish-sandbox.socket" 0644
+	install_systemd_unit "$ROOTFS_DIR/lib/systemd/system/aish-sandbox.service" "/etc/systemd/system/aish-sandbox.service"
+	install_systemd_unit "$ROOTFS_DIR/lib/systemd/system/aish-sandbox.socket" "/etc/systemd/system/aish-sandbox.socket"
 fi
 install_file "$ROOTFS_DIR/usr/share/doc/aish/skills-guide.md" "/usr/local/share/aish/skills-guide.md" 0644
 
@@ -191,8 +218,8 @@ fi
 
 if [[ -n "$INSTALL_PREFIX" ]]; then
 	echo "AI Shell installed successfully into ${INSTALL_PREFIX}."
-	echo "Add ${INSTALL_PREFIX}/usr/local/bin to your PATH if needed:"
-	echo "  export PATH=\"${INSTALL_PREFIX}/usr/local/bin:\$PATH\""
+	echo "Add ${INSTALL_PREFIX}${BIN_DIR} to your PATH if needed:"
+	echo "  export PATH=\"${INSTALL_PREFIX}${BIN_DIR}:\$PATH\""
 	exit 0
 fi
 
