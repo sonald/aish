@@ -171,6 +171,13 @@ class ConfigModel(BaseModel):
         default=None, description="Custom API base URL (e.g., for OpenRouter)"
     )
     api_key: Optional[str] = Field(default=None, description="API key for the service")
+    codex_auth_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Path to OpenAI Codex auth.json. Defaults to $AISH_CODEX_AUTH_PATH, "
+            "$CODEX_HOME/auth.json, or ~/.codex/auth.json"
+        ),
+    )
     temperature: float = Field(
         default=0.7, ge=0.0, le=2.0, description="Temperature for LLM responses"
     )

@@ -22,6 +22,7 @@ from rich.table import Table
 from ..config import Config, ConfigModel
 from ..i18n import t
 from ..litellm_loader import load_litellm, preload_litellm
+from ..openai_codex import is_openai_codex_model
 from .constants import (_HUGGINGFACE_DEFAULT_MODEL,
                         _KILOCODE_DEFAULT_MODEL, _MISTRAL_DEFAULT_MODEL,
                         _OLLAMA_DEFAULT_MODEL, _QIANFAN_MODELS,
@@ -1494,9 +1495,14 @@ def needs_interactive_setup(
     model_arg: Optional[str],
     api_key_arg: Optional[str],
 ) -> bool:
-    if model_arg is None and _is_blank(raw_config.get("model")):
+    effective_model = model_arg if model_arg is not None else raw_config.get("model")
+    if model_arg is None and _is_blank(effective_model):
         return True
-    if api_key_arg is None and _is_blank(raw_config.get("api_key")):
+    if (
+        api_key_arg is None
+        and _is_blank(raw_config.get("api_key"))
+        and not is_openai_codex_model(str(effective_model or ""))
+    ):
         return True
     return False
 
