@@ -11,6 +11,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- TBD
+
+### Changed
+
+- TBD
+
+### Deprecated
+
+- TBD
+
+### Removed
+
+- TBD
+
+### Fixed
+
+- TBD
+
+### Security
+
+- TBD
+
+## [0.1.1] - 2026-03-13
+
+### Added
+
 - Added built-in OpenAI Codex OAuth support.
 - Added a manual Release PR workflow to prepare version bumps and release notes before publication.
 - Added a unified Release Preparation workflow that validates the target version and dry-runs release bundles before the final release.
@@ -30,7 +56,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed Linux bundle smoke tests to match the installer layout used by release artifacts.
 - Fixed startup welcome screen rendering regressions.
 - Fixed official website redirection failures.
-
 ## [0.1.0] - 2025-12-29
 
 ### Added
