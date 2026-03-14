@@ -44,6 +44,8 @@ class LiteLLMProviderAdapter:
             api_key=api_key,
             messages=messages,
             stream=stream,
+            tools=tools,
+            tool_choice=tool_choice,
             **kwargs,
         )
 

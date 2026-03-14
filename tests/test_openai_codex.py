@@ -8,6 +8,7 @@ import pytest
 from aish.config import ConfigModel
 from aish.context_manager import ContextManager
 from aish.llm import LLMSession
+from aish.providers.registry import LiteLLMProviderAdapter
 from aish.providers.openai_codex import (_collect_openai_codex_stream_response,
                                          _extract_http_error_message,
                                          OpenAICodexDeviceCode,
@@ -432,6 +433,41 @@ def test_convert_openai_codex_response_to_chat_completion_maps_tool_calls():
             },
         }
     ]
+
+
+@pytest.mark.anyio
+async def test_litellm_provider_forwards_tools_and_tool_choice():
+    provider = LiteLLMProviderAdapter()
+    fallback_completion = AsyncMock(return_value={"choices": []})
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "bash_exec",
+                "description": "Run a shell command",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                },
+            },
+        }
+    ]
+
+    await provider.create_completion(
+        model="openai/gpt-5.2-codex",
+        config=ConfigModel(model="openai/gpt-5.2-codex"),
+        api_base="https://api.openai.com/v1",
+        api_key="test-key",
+        messages=[{"role": "user", "content": "inspect processes"}],
+        stream=True,
+        tools=tools,
+        tool_choice="auto",
+        fallback_completion=fallback_completion,
+    )
+
+    assert fallback_completion.await_count == 1
+    assert fallback_completion.await_args.kwargs["tools"] == tools
+    assert fallback_completion.await_args.kwargs["tool_choice"] == "auto"
 
 
 @pytest.mark.anyio
