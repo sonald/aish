@@ -16,6 +16,17 @@ body:
       placeholder: 执行某命令时出现错误...
     validations:
       required: true
+  - type: dropdown
+    id: bug_type
+    attributes:
+      label: 问题类型
+      options:
+        - 回归问题（以前正常，现在失败）
+        - 崩溃问题（进程退出或卡死）
+        - 行为错误（结果或状态错误，但未崩溃）
+        - 安全问题
+    validations:
+      required: true
   - type: textarea
     id: repro
     attributes:

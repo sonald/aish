@@ -16,6 +16,17 @@ body:
       placeholder: When running X command, error Y occurs...
     validations:
       required: true
+  - type: dropdown
+    id: bug_type
+    attributes:
+      label: Bug type
+      options:
+        - Regression (worked before, now fails)
+        - Crash (process/app exits or hangs)
+        - Behavior bug (incorrect output/state without crash)
+        - Security issue
+    validations:
+      required: true
   - type: textarea
     id: repro
     attributes:

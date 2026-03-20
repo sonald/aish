@@ -42,6 +42,7 @@ Welcome to make Shell smarter!
 
 - Code PRs run lint, tests, and cross-platform smoke checks.
 - Packaging-related PRs additionally run Linux bundle build and install smoke checks.
+- `Auto response` is the repository's community bot for Issues and PRs. Reply text lives in `.github/auto-response-config.json`, and runtime logic lives in `.github/scripts/auto-response.cjs`.
 - `Release Metadata` is the shared release action that normalizes stable version inputs, validates repository version state, and uploads both markdown and JSON metadata artifacts.
 - `make prepare-release-files VERSION=X.Y.Z [DATE=YYYY-MM-DD]` updates `pyproject.toml`, `src/aish/__init__.py`, `uv.lock`, and inserts a dated release section at the top of `CHANGELOG.md`.
 - Prepare release files locally in a normal PR, merge that PR into `main`, then run `Release Preparation` as the preflight validation for the target stable version.

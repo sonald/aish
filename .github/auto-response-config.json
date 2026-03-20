@@ -1,0 +1,243 @@
+{
+  "links": {
+    "discussions": "https://github.com/AI-Shell-Team/aish/discussions",
+    "documentation": "https://github.com/AI-Shell-Team/aish/blob/main/README.md",
+    "contributing": "https://github.com/AI-Shell-Team/aish/blob/main/CONTRIBUTING.md"
+  },
+  "welcome": {
+    "issue": {
+      "marker": "issue-welcome",
+      "body": "Thanks for opening this issue. A maintainer will review it when available.\n\nBefore that, please make sure the report includes clear reproduction steps, expected behavior, actual behavior, and environment details.\n\nContribution guide: {{contributing}}",
+      "first_time_suffix": "It looks like this is your first issue in this repository. Thanks for contributing."
+    },
+    "pull_request": {
+      "marker": "pr-welcome",
+      "body": "Thanks for the pull request. A maintainer will review it when available.\n\nPlease keep the PR focused, explain the why in the description, and make sure local checks pass before requesting review.\n\nContribution guide: {{contributing}}",
+      "first_time_suffix": "It looks like this is your first pull request in this repository. Thanks for contributing."
+    }
+  },
+  "spam": {
+    "mention_threshold": 2,
+    "issue": {
+      "marker": "issue-mention-warning",
+      "body": "Please avoid spamming mentions in issues. Be concise and specific about the problem."
+    },
+    "comment": {
+      "marker": "comment-mention-warning",
+      "body": "Please avoid spamming mentions. Be patient, or use GitHub Discussions for help."
+    }
+  },
+  "label_rules": [
+    {
+      "label": "r: support",
+      "marker": "label-support",
+      "close": true,
+      "body": "Please use GitHub Discussions for support questions. You can also check the documentation: https://github.com/AI-Shell-Team/aish/blob/main/README.md"
+    },
+    {
+      "label": "r: duplicate",
+      "marker": "label-duplicate",
+      "close": true,
+      "body": "This issue has been marked as a duplicate. Please continue the discussion in the linked issue."
+    },
+    {
+      "label": "r: wontfix",
+      "marker": "label-wontfix",
+      "close": true,
+      "body": "This issue has been marked as \"wontfix\". This means we reviewed it and decided not to implement the requested feature or fix. Thank you for your understanding."
+    },
+    {
+      "label": "r: question",
+      "marker": "label-question",
+      "close": true,
+      "body": "This appears to be a question rather than a bug report or feature request. Please use GitHub Discussions for questions."
+    }
+  ],
+  "guards": {
+    "trigger_label": "trigger-response",
+    "invalid_label": "invalid",
+    "dirty_label": "dirty",
+    "security_label": "security",
+    "pull_request_max_labels": 20,
+    "dirty_pull_request": {
+      "marker": "pr-dirty-close",
+      "body": "Closing this PR because it looks dirty (too many unrelated or unexpected changes). Please recreate the PR from a clean branch."
+    }
+  },
+  "template_checks": {
+    "issue": {
+      "marker": "issue-template-incomplete",
+      "body": "This issue looks incomplete. Please update it with the missing information below so maintainers can triage it effectively.\n\nMissing items:\n{{missing_items}}",
+      "missing_template_body": "This issue does not appear to use one of the repository templates. Please edit it using the bug report or feature request structure so maintainers can triage it effectively.\n\nContribution guide: {{contributing}}",
+      "resolved_body": "Template check passed. Thanks for filling in the missing issue details."
+    },
+    "pull_request": {
+      "marker": "pr-template-incomplete",
+      "body": "This pull request description looks incomplete. Please update the missing sections below before review.\n\nMissing items:\n{{missing_items}}",
+      "resolved_body": "Template check passed. Thanks for updating the pull request description."
+    }
+  },
+  "issue_classification": {
+    "max_labels_to_add": 3,
+    "exclusive_groups": [
+      {
+        "name": "interaction-surface",
+        "labels": ["core", "pty", "cli", "builtin"]
+      },
+      {
+        "name": "agent-surface",
+        "labels": ["agent", "skills", "tools"]
+      },
+      {
+        "name": "operations-surface",
+        "labels": ["config", "packaging", "dependencies", "ci-cd", "observability"]
+      },
+      {
+        "name": "content-surface",
+        "labels": ["docs", "i18n", "tests"]
+      },
+      {
+        "name": "security-surface",
+        "labels": ["security", "sandbox"]
+      }
+    ],
+    "rules": [
+      {
+        "label": "core",
+        "color": "1D76DB",
+        "description": "Core runtime and shared library issue",
+        "priority": 30,
+        "group": "interaction-surface",
+        "keywords": ["core", "runtime", "crash on startup", "shared logic", "主流程", "核心逻辑", "基础能力"]
+      },
+      {
+        "label": "pty",
+        "color": "0052CC",
+        "description": "PTY or interactive process issue",
+        "priority": 80,
+        "group": "interaction-surface",
+        "keywords": ["pty", "tty", "resize", "interactive", "vim", "top", "less", "curses", "终端大小", "交互程序", "tty 模式"]
+      },
+      {
+        "label": "agent",
+        "color": "FBCA04",
+        "description": "Agent or LLM workflow issue",
+        "priority": 70,
+        "group": "agent-surface",
+        "keywords": ["agent", "llm", "model", "prompt", "tool call", "function call", "streaming", "代理", "模型", "提示词", "工具调用", "流式"]
+      },
+      {
+        "label": "skills",
+        "color": "BFDADC",
+        "description": "Skills-related issue",
+        "priority": 85,
+        "group": "agent-surface",
+        "keywords": ["skill", "skills", "技能", "skill hot reload", "技能热加载"]
+      },
+      {
+        "label": "tools",
+        "color": "C5DEF5",
+        "description": "Tool integration issue",
+        "priority": 75,
+        "group": "agent-surface",
+        "keywords": ["tool", "tools", "function tool", "file tool", "bash tool", "工具", "工具调用", "文件工具", "终端工具"]
+      },
+      {
+        "label": "security",
+        "color": "D93F0B",
+        "description": "Security-related issue",
+        "priority": 90,
+        "group": "security-surface",
+        "keywords": ["security", "vulnerability", "sandbox escape", "secret", "credential", "token leak", "安全", "漏洞", "沙箱逃逸", "密钥泄露"]
+      },
+      {
+        "label": "sandbox",
+        "color": "B60205",
+        "description": "Sandbox-related issue",
+        "priority": 100,
+        "group": "security-surface",
+        "keywords": ["sandbox", "seccomp", "isolation", "mount", "namespaces", "sandboxd", "沙箱", "隔离", "挂载", "命名空间"]
+      },
+      {
+        "label": "config",
+        "color": "5319E7",
+        "description": "Configuration-related issue",
+        "priority": 65,
+        "group": "operations-surface",
+        "keywords": ["config", "configuration", "settings", "provider", "endpoint", "base url", ".env", "env var", "api base", "配置", "设置", "环境变量", "提供商", "端点"]
+      },
+      {
+        "label": "cli",
+        "color": "6F42C1",
+        "description": "CLI and shell UX issue",
+        "priority": 60,
+        "group": "interaction-surface",
+        "keywords": ["cli", "command", "shell", "terminal", "prompt", "command line", "命令行", "终端", "shell 模式", "提示符"]
+      },
+      {
+        "label": "i18n",
+        "color": "006B75",
+        "description": "Internationalization-related issue",
+        "priority": 45,
+        "group": "content-surface",
+        "keywords": ["translation", "locale", "i18n", "l10n", "language", "翻译", "多语言", "本地化", "语言包"]
+      },
+      {
+        "label": "docs",
+        "color": "0E8A16",
+        "description": "Documentation-related issue",
+        "priority": 55,
+        "group": "content-surface",
+        "keywords": ["docs", "documentation", "readme", "guide", "tutorial", "typo", "文档", "说明", "教程", "拼写"]
+      },
+      {
+        "label": "packaging",
+        "color": "D4C5F9",
+        "description": "Packaging or installation issue",
+        "priority": 70,
+        "group": "operations-surface",
+        "keywords": ["install", "installer", "package", "deb", "bundle", "build.sh", "打包", "安装", "deb 包", "构建包"]
+      },
+      {
+        "label": "tests",
+        "color": "C2E0C6",
+        "description": "Test coverage or test failure issue",
+        "priority": 50,
+        "group": "content-surface",
+        "keywords": ["test", "tests", "pytest", "failing test", "flaky", "测试", "测试失败", "不稳定测试"]
+      },
+      {
+        "label": "ci-cd",
+        "color": "0052CC",
+        "description": "CI/CD workflow issue",
+        "priority": 60,
+        "group": "operations-surface",
+        "keywords": ["github actions", "workflow", "ci", "pipeline", "release", "artifact", "持续集成", "工作流", "发布流程", "产物"]
+      },
+      {
+        "label": "dependencies",
+        "color": "0366D6",
+        "description": "Dependency management issue",
+        "priority": 68,
+        "group": "operations-surface",
+        "keywords": ["dependency", "dependencies", "uv.lock", "pyproject", "version bump", "upgrade", "依赖", "版本升级", "锁文件"]
+      },
+      {
+        "label": "observability",
+        "color": "F9D0C4",
+        "description": "Logging or observability issue",
+        "priority": 58,
+        "group": "operations-surface",
+        "keywords": ["log", "logging", "trace", "telemetry", "langfuse", "日志", "追踪", "遥测"]
+      },
+      {
+        "label": "builtin",
+        "color": "E99695",
+        "description": "Built-in command or workflow issue",
+        "priority": 72,
+        "group": "interaction-surface",
+        "keywords": ["builtin", "built-in", "slash command", "built in command", "内置命令", "内建命令"]
+      }
+    ]
+  }
+}
