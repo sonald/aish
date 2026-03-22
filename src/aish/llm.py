@@ -1,10 +1,12 @@
 import json
 import logging
+import os
 import threading
 import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Callable, Optional
 
 import anyio
@@ -14,13 +16,18 @@ from aish.cancellation import CancellationReason, CancellationToken
 from aish.config import ConfigModel
 from aish.context_manager import ContextManager, MemoryType
 from aish.exception import is_litellm_exception, redact_secrets
-from aish.i18n import t
 from aish.interruption import ShellState
 from aish.litellm_loader import load_litellm
 from aish.providers.registry import get_provider_for_model
 from aish.prompts import PromptManager
 from aish.skills import SkillManager
-from aish.tools.base import ToolBase
+from aish.tools.base import (
+    ToolBase,
+    ToolExecutionContext,
+    ToolPanelSpec,
+    ToolPreflightAction,
+    ToolPreflightResult,
+)
 from aish.tools.code_exec import BashTool, PythonTool
 from aish.tools.fs_tools import EditFileTool, ReadFileTool, WriteFileTool
 from aish.tools.result import ToolResult
@@ -81,6 +88,19 @@ class LLMEvent:
     data: dict
     timestamp: float
     metadata: Optional[dict] = None
+
+
+class ToolDispatchStatus(Enum):
+    EXECUTED = "executed"
+    SHORT_CIRCUIT = "short_circuit"
+    REJECTED = "rejected"
+    CANCELLED = "cancelled"
+
+
+@dataclass
+class ToolDispatchOutcome:
+    status: ToolDispatchStatus
+    result: ToolResult
 
 
 def normalize_tool_result(value: object) -> ToolResult:
@@ -851,203 +871,128 @@ class LLMSession:
         )
         return tool_result
 
+    def _build_tool_panel_event_data(
+        self,
+        *,
+        tool: ToolBase,
+        tool_name: str,
+        tool_args: dict,
+        panel: ToolPanelSpec,
+    ) -> dict:
+        panel_payload = panel.to_event_payload()
+        data: dict = {
+            "tool_name": tool_name,
+            "tool_args": tool_args,
+            "description": tool.description,
+            "panel": panel_payload,
+            # Temporary top-level mirror for transition/debugging.
+            "panel_mode": panel.mode,
+        }
+        for key in (
+            "target",
+            "preview",
+            "analysis",
+            "allow_remember",
+            "remember_key",
+            "title",
+        ):
+            if key in panel_payload:
+                data[key] = panel_payload[key]
+        return data
+
     async def pre_execute_tool(
         self, tool_name: str, tool_args: dict
-    ) -> tuple[LLMCallbackResult, ToolResult]:
+    ) -> ToolDispatchOutcome:
         try:
             if tool_name not in self.tools:
-                return (
-                    LLMCallbackResult.CONTINUE,
-                    ToolResult(
+                return ToolDispatchOutcome(
+                    status=ToolDispatchStatus.REJECTED,
+                    result=ToolResult(
                         ok=False,
                         output=f"Error: Invalid tool name: {tool_name}",
                     ),
                 )
 
             tool = self.tools[tool_name]
-
-            # For BashTool, pass the code to check if confirmation is needed
-            if tool_name == "bash_exec":
-                arg = tool_args.get("code")
-            elif tool_name == "write_file":
-                arg = tool_args.get("content")
-            elif tool_name == "edit_file":
-                arg = tool_args
-            else:
-                arg = None
-
-            # 使用 to_thread.run 来避免阻塞事件循环
-            # 这样信号处理器可以在沙箱评估期间运行
-            need_confirm = await anyio.to_thread.run_sync(
-                tool.need_confirm_before_exec, arg
+            context = ToolExecutionContext(
+                cwd=Path(os.getcwd()).resolve(),
+                cancellation_token=self.cancellation_token,
+                interruption_manager=self.interruption_manager,
+                is_approved=self.is_command_approved,
             )
+            preflight = await anyio.to_thread.run_sync(
+                tool.prepare_invocation, tool_args, context
+            )
+            if not isinstance(preflight, ToolPreflightResult):
+                preflight = ToolPreflightResult()
 
-            confirmation_info: dict = {}
-            security_analysis: dict = {}
-            security_decision: dict = {}
-            suppress_security_panels = False
-
-            if tool_name == "bash_exec" and arg is not None:
-                try:
-                    confirmation_info = tool.get_confirmation_info(arg)  # type: ignore[assignment]
-                    security_analysis = (
-                        confirmation_info.get("security_analysis", {})
-                        if isinstance(confirmation_info, dict)
-                        else {}
-                    )
-                    security_decision = (
-                        confirmation_info.get("security_decision", {})
-                        if isinstance(confirmation_info, dict)
-                        else {}
-                    )
-                except Exception:
-                    confirmation_info = {}
-                    security_analysis = {}
-                    security_decision = {}
-
-                # 1) fail-open when sandbox is unavailable (cannot assess risks)
-                if (
-                    isinstance(security_analysis, dict)
-                    and security_analysis.get("fail_open") is True
-                ):
-                    need_confirm = False
-                    suppress_security_panels = True
-
-                # 2) exact-match allowlist
-                if callable(self.is_command_approved) and self.is_command_approved(arg):
-                    need_confirm = False
-                    suppress_security_panels = True
-
-                if (
-                    isinstance(security_decision, dict)
-                    and security_decision.get("allow") is False
-                ):
-                    need_confirm = False
-
-            # 在沙箱评估后检查是否被取消
-            # 如果被取消，直接返回 CANCEL，不继续执行
             if self.cancellation_token and self.cancellation_token.is_cancelled():
                 if self.interruption_manager:
                     self.interruption_manager.set_state(ShellState.NORMAL)
-                return (
-                    LLMCallbackResult.CANCEL,
-                    ToolResult(
+                return ToolDispatchOutcome(
+                    status=ToolDispatchStatus.CANCELLED,
+                    result=ToolResult(
                         ok=False,
                         output="Operation cancelled during security evaluation",
                     ),
                 )
 
-            # 安全提示面板：对 AI 生成命令的风险评估结果进行展示。
-            # - MEDIUM 且需要确认：走确认面板 + y/n
-            # - LOW：展示 info 面板，不阻塞
-            # - HIGH：展示 blocked 面板，不出现确认；仍由工具自身/安全系统直接阻断
-            if (
-                tool_name == "bash_exec"
-                and arg is not None
-                and not suppress_security_panels
-            ):
-                try:
-                    info = confirmation_info or tool.get_confirmation_info(arg)
-                    security_analysis = (
-                        info.get("security_analysis", {})
-                        if isinstance(info, dict)
-                        else {}
-                    )
-                    sandbox_info = (
-                        security_analysis.get("sandbox", {})
-                        if isinstance(security_analysis, dict)
-                        else {}
-                    )
-                    sandbox_reason = str(
-                        sandbox_info.get("reason", "")
-                        if isinstance(sandbox_info, dict)
-                        else ""
-                    )
-                    fallback_rule_matched = bool(
-                        security_analysis.get("fallback_rule_matched")
-                    ) if isinstance(security_analysis, dict) else False
-                    skip_confirmation_panel = sandbox_reason in {
-                        "sandbox_disabled",
-                        "sandbox_disabled_by_policy",
-                    } and not fallback_rule_matched
-                    risk_level = str(
-                        security_analysis.get("risk_level", "UNKNOWN")
-                    ).upper()
-                    panel_mode = (
-                        "confirm"
-                        if need_confirm
-                        else (
-                            "blocked" if risk_level in {"HIGH", "CRITICAL"} else "info"
-                        )
-                    )
-
-                    if panel_mode != "confirm" and not skip_confirmation_panel:
-                        notice_data = {
-                            "tool_name": tool_name,
-                            "tool_args": tool_args,
-                            "description": tool.description,
-                            "panel_mode": panel_mode,
-                            **(info if isinstance(info, dict) else {}),
-                        }
-                        self.emit_event(
-                            LLMEventType.TOOL_CONFIRMATION_REQUIRED, notice_data
-                        )
-                except Exception:
-                    # 不影响工具执行；提示面板失败时静默跳过
-                    pass
-
-            if (
-                tool_name == "bash_exec"
-                and isinstance(security_decision, dict)
-                and security_decision.get("allow") is False
-            ):
-                reasons = (
-                    security_analysis.get("reasons", [])
-                    if isinstance(security_analysis, dict)
-                    else []
-                )
-                reason_text = ", ".join(str(reason) for reason in reasons[:5] if reason)
-                blocked_msg = (
-                    t("security.command_blocked_with_reason", reason=reason_text)
-                    if reason_text
-                    else t("security.command_blocked")
-                )
-                return (
-                    LLMCallbackResult.CONTINUE,
-                    ToolResult(
-                        ok=False,
-                        output=blocked_msg,
-                        code=126,
-                        meta={"kind": "security_blocked", "reasons": reasons},
+            panel = preflight.panel
+            if panel is not None and panel.mode == "info":
+                self.emit_event(
+                    LLMEventType.TOOL_CONFIRMATION_REQUIRED,
+                    self._build_tool_panel_event_data(
+                        tool=tool,
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        panel=panel,
                     ),
                 )
 
-            if need_confirm:
-                # Prepare confirmation data with security information
-                confirmation_data = {
-                    "tool_name": tool_name,
-                    "tool_args": tool_args,
-                    "description": tool.description,
-                    "panel_mode": "confirm",
-                    **(confirmation_info or tool.get_confirmation_info(arg)),
-                }
+            if preflight.action == ToolPreflightAction.SHORT_CIRCUIT:
+                if panel is not None and panel.mode == "blocked":
+                    self.emit_event(
+                        LLMEventType.TOOL_CONFIRMATION_REQUIRED,
+                        self._build_tool_panel_event_data(
+                            tool=tool,
+                            tool_name=tool_name,
+                            tool_args=tool_args,
+                            panel=panel,
+                        ),
+                    )
+                return ToolDispatchOutcome(
+                    status=ToolDispatchStatus.SHORT_CIRCUIT,
+                    result=preflight.result
+                    or ToolResult(
+                        ok=False,
+                        output=f"Tool {tool_name} short-circuited without a result",
+                    ),
+                )
 
-                # Request user confirmation
+            if preflight.action == ToolPreflightAction.CONFIRM:
+                confirm_panel = panel or ToolPanelSpec(mode="confirm")
                 goon = self.request_confirmation(
                     LLMEventType.TOOL_CONFIRMATION_REQUIRED,
-                    confirmation_data,
+                    self._build_tool_panel_event_data(
+                        tool=tool,
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        panel=confirm_panel,
+                    ),
                     timeout_seconds=30.0,
                     default_on_timeout=LLMCallbackResult.DENY,
                 )
 
-                # Handle confirmation result
                 if goon == LLMCallbackResult.APPROVE:
-                    return goon, await self.execute_tool(tool, tool_name, tool_args)
+                    return ToolDispatchOutcome(
+                        status=ToolDispatchStatus.EXECUTED,
+                        result=await self.execute_tool(tool, tool_name, tool_args),
+                    )
 
-                elif goon == LLMCallbackResult.DENY:
-                    return (
-                        goon,
-                        ToolResult(
+                if goon == LLMCallbackResult.DENY:
+                    return ToolDispatchOutcome(
+                        status=ToolDispatchStatus.REJECTED,
+                        result=ToolResult(
                             ok=False,
                             output=(
                                 f"Tool {tool_name} execution denied by user, you may "
@@ -1056,45 +1001,41 @@ class LLMSession:
                         ),
                     )
 
-                elif goon == LLMCallbackResult.CANCEL:
-                    return (
-                        goon,
-                        ToolResult(
+                if goon == LLMCallbackResult.CANCEL:
+                    return ToolDispatchOutcome(
+                        status=ToolDispatchStatus.CANCELLED,
+                        result=ToolResult(
                             ok=False,
                             output=f"Tool {tool_name} execution cancelled by user",
                         ),
                     )
 
-                else:
-                    return (
-                        goon,
-                        ToolResult(
-                            ok=False,
-                            output=f"Invalid confirmation result: {goon}",
-                        ),
-                    )
-            else:
-                # No confirmation needed, execute directly
-                return (
-                    LLMCallbackResult.APPROVE,
-                    await self.execute_tool(tool, tool_name, tool_args),
+                return ToolDispatchOutcome(
+                    status=ToolDispatchStatus.REJECTED,
+                    result=ToolResult(
+                        ok=False,
+                        output=f"Invalid confirmation result: {goon}",
+                    ),
                 )
+
+            return ToolDispatchOutcome(
+                status=ToolDispatchStatus.EXECUTED,
+                result=await self.execute_tool(tool, tool_name, tool_args),
+            )
         except KeyboardInterrupt:
-            # 用户中断（例如在沙箱评估期间按 Ctrl+C）
-            # 恢复状态并返回取消结果
             if self.interruption_manager:
                 self.interruption_manager.set_state(ShellState.NORMAL)
-            return (
-                LLMCallbackResult.CANCEL,
-                ToolResult(
+            return ToolDispatchOutcome(
+                status=ToolDispatchStatus.CANCELLED,
+                result=ToolResult(
                     ok=False,
                     output="Operation cancelled by user",
                 ),
             )
         except Exception as e:
-            return (
-                LLMCallbackResult.CONTINUE,
-                ToolResult(
+            return ToolDispatchOutcome(
+                status=ToolDispatchStatus.REJECTED,
+                result=ToolResult(
                     ok=False,
                     output=str(e),
                     meta={"exception_type": type(e).__name__},
@@ -1133,7 +1074,7 @@ class LLMSession:
         return {
             "role": "user",
             "content": (
-                "<system-reminder>\n" f"{skills_reminder_text}\n" "</system-reminder>"
+                f"<system-reminder>\n{skills_reminder_text}\n</system-reminder>"
             ),
         }
 
@@ -1205,8 +1146,12 @@ class LLMSession:
             # TODO: For malformed/truncated tool arguments, add a model-side retry flow.
             tool_args = json.loads(tool_call["function"]["arguments"])
 
-            goon, tool_result = await self.pre_execute_tool(tool_name, tool_args)
-            if goon == LLMCallbackResult.APPROVE:
+            dispatch = await self.pre_execute_tool(tool_name, tool_args)
+            tool_result = dispatch.result
+            if dispatch.status in {
+                ToolDispatchStatus.EXECUTED,
+                ToolDispatchStatus.SHORT_CIRCUIT,
+            }:
                 rendered_result = tool_result.render_for_llm()
                 tool_msg = {
                     "role": "tool",
@@ -1239,7 +1184,7 @@ class LLMSession:
                 }
                 context_manager.add_memory(MemoryType.LLM, error_msg)
 
-                if goon == LLMCallbackResult.CANCEL:
+                if dispatch.status == ToolDispatchStatus.CANCELLED:
                     # 触发 CANCELLED 事件，让 shell 能够显示取消消息
                     self.emit_event(
                         LLMEventType.CANCELLED, {"reason": "tool_cancelled"}

@@ -369,16 +369,16 @@ def handle_tool_confirmation_required(shell: Any, event: LLMEvent) -> LLMCallbac
     self._finalize_content_preview()
     data = event.data
 
-    panel_mode = str(data.get("panel_mode", "confirm")).lower()
+    panel = data.get("panel") if isinstance(data.get("panel"), dict) else {}
+    panel_mode = str(panel.get("mode") or data.get("panel_mode", "confirm")).lower()
 
     # Display confirmation/security notice using rich formatting
     self._display_security_panel(data, panel_mode=panel_mode)
 
     # Only "confirm" requires interactive user input
     if panel_mode == "confirm":
-        tool_name = str(data.get("tool_name", ""))
-        remember_command = data.get("command")
-        allow_remember = bool(remember_command) and tool_name == "bash_exec"
+        remember_command = panel.get("remember_key", data.get("remember_key"))
+        allow_remember = bool(panel.get("allow_remember", data.get("allow_remember")))
         return self._get_user_confirmation(
             remember_command=remember_command,
             allow_remember=allow_remember,
@@ -926,12 +926,21 @@ def handle_ask_user_required_inline(shell: Any, event: LLMEvent) -> LLMCallbackR
 def display_security_panel(shell: Any, data: dict, panel_mode: str = "confirm") -> None:
     """Display rich security panel for AI tool calls."""
     self = shell
-    panel_mode = str(panel_mode).lower()
+    panel = data.get("panel") if isinstance(data.get("panel"), dict) else {}
+    panel_mode = str(panel.get("mode") or panel_mode).lower()
     is_blocked = panel_mode == "blocked"
     is_info = panel_mode == "info"
 
     tool_name = str(data.get("tool_name", "unknown"))
-    security_analysis = data.get("security_analysis", {})
+    security_analysis = panel.get("analysis")
+    if not isinstance(security_analysis, dict):
+        security_analysis = (
+            data.get("analysis")
+            if isinstance(data.get("analysis"), dict)
+            else data.get("security_analysis", {})
+        )
+    target = panel.get("target", data.get("target"))
+    preview = panel.get("preview", data.get("preview"))
 
     def _sandbox_reason_value(analysis: object) -> str:
         if not isinstance(analysis, dict):
@@ -997,6 +1006,8 @@ def display_security_panel(shell: Any, data: dict, panel_mode: str = "confirm") 
         content.append(
             f"[bold]{t('shell.security.label.command')}:[/bold] {data['command']}"
         )
+    elif target:
+        content.append(f"[bold]{t('shell.security.label.target')}:[/bold] {target}")
 
     # Fallback hint: sandbox failed to assess the command, so we cannot determine risk.
     # In this case we ask users to confirm before executing the real command.
@@ -1019,32 +1030,17 @@ def display_security_panel(shell: Any, data: dict, panel_mode: str = "confirm") 
             f"[bold]{t('shell.security.label.fallback_hint')}:[/bold] {hint}"
         )
 
-    # For non-bash tools (e.g. write_file), tool-specific confirmation info is carried
-    # in generic fields like tool_args/content_preview/content_length.
-    tool_args = data.get("tool_args")
-    if isinstance(tool_args, dict):
-        file_path = tool_args.get("file_path") or tool_args.get("path")
-        if file_path:
-            content.append(
-                f"[bold]{t('shell.security.label.target')}:[/bold] {file_path}"
-            )
-
-        if "content" in tool_args:
+    if preview is None:
+        tool_args = data.get("tool_args")
+        if isinstance(tool_args, dict) and "content" in tool_args:
             raw_content = tool_args.get("content")
+            if isinstance(raw_content, str):
+                preview = raw_content[:100] + "..." if len(raw_content) > 100 else raw_content
 
-            # Prefer the tool-provided preview; otherwise derive a safe preview.
-            content_preview = data.get("content_preview")
-            if tool_name == "write_file" and isinstance(raw_content, str):
-                content_preview = raw_content
-            elif content_preview is None and isinstance(raw_content, str):
-                content_preview = (
-                    raw_content[:100] + "..." if len(raw_content) > 100 else raw_content
-                )
-
-            if content_preview is not None:
-                content.append(
-                    f"[bold]{t('shell.security.label.content_preview')}:[/bold] {content_preview}"
-                )
+    if preview is not None:
+        content.append(
+            f"[bold]{t('shell.security.label.content_preview')}:[/bold] {preview}"
+        )
 
     if security_analysis and (sandbox_enabled or fallback_rule_matched):
         is_low_risk = risk_level_upper == "LOW"

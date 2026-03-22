@@ -1,8 +1,14 @@
 from pathlib import Path
 from typing import ClassVar
 
-from aish.tools.base import ToolBase
+from aish.tools.base import (ToolBase, ToolExecutionContext, ToolPanelSpec,
+                             ToolPreflightAction, ToolPreflightResult)
 from aish.tools.result import ToolResult
+
+
+def _preview_text(value: object, limit: int = 100) -> str:
+    text = str(value) if value is not None else ""
+    return text[:limit] + "..." if len(text) > limit else text
 
 
 # TODO: support images
@@ -188,6 +194,21 @@ class WriteFileTool(ToolBase):
     def need_confirm_before_exec(self, content: str) -> bool:
         return True
 
+    def prepare_invocation(
+        self, tool_args: dict[str, object], context: ToolExecutionContext
+    ) -> ToolPreflightResult:
+        _ = context
+        file_path = tool_args.get("file_path")
+        content = tool_args.get("content", "")
+        return ToolPreflightResult(
+            action=ToolPreflightAction.CONFIRM,
+            panel=ToolPanelSpec(
+                mode="confirm",
+                target=str(file_path) if file_path is not None else None,
+                preview=content if isinstance(content, str) else _preview_text(content),
+            ),
+        )
+
     def get_confirmation_info(self, content: str) -> dict:
         # For write_file tool, we need to get the file_path from the tool_args
         # Since we only receive the content string here, we'll return what we can
@@ -346,18 +367,33 @@ Usage:
     def need_confirm_before_exec(self, tool_args: dict | None = None) -> bool:
         return True
 
+    def prepare_invocation(
+        self, tool_args: dict[str, object], context: ToolExecutionContext
+    ) -> ToolPreflightResult:
+        _ = context
+        replace_all = bool(tool_args.get("replace_all", False))
+        old_string = tool_args.get("old_string", "")
+        new_string = tool_args.get("new_string", "")
+        mode = "Replace all" if replace_all else "Replace"
+        return ToolPreflightResult(
+            action=ToolPreflightAction.CONFIRM,
+            panel=ToolPanelSpec(
+                mode="confirm",
+                target=str(tool_args.get("file_path"))
+                if tool_args.get("file_path") is not None
+                else None,
+                preview=f"{mode}: {_preview_text(old_string)} -> {_preview_text(new_string)}",
+            ),
+        )
+
     def get_confirmation_info(self, tool_args: dict | None = None) -> dict:
         if not isinstance(tool_args, dict):
             return {}
-
-        def _preview(value: object, limit: int = 100) -> str:
-            text = str(value) if value is not None else ""
-            return text[:limit] + "..." if len(text) > limit else text
 
         replace_all = bool(tool_args.get("replace_all", False))
         old_string = tool_args.get("old_string", "")
         new_string = tool_args.get("new_string", "")
         mode = "Replace all" if replace_all else "Replace"
         return {
-            "content_preview": f"{mode}: {_preview(old_string)} -> {_preview(new_string)}"
+            "content_preview": f"{mode}: {_preview_text(old_string)} -> {_preview_text(new_string)}"
         }

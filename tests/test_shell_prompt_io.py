@@ -7,7 +7,11 @@ from unittest.mock import patch
 from rich.console import Console
 
 from aish.llm import LLMCallbackResult, LLMEvent, LLMEventType
-from aish.shell_enhanced.shell_prompt_io import display_security_panel, handle_ask_user_required
+from aish.shell_enhanced.shell_prompt_io import (
+    display_security_panel,
+    handle_ask_user_required,
+    handle_tool_confirmation_required,
+)
 
 
 def _reset_i18n_cache() -> None:
@@ -117,6 +121,8 @@ def test_display_security_panel_shows_fallback_rule_details(monkeypatch):
     assert "风险等级" in output
     assert "原因" in output
     assert "系统配置目录，误修改会导致严重故障" in output
+
+
 def test_display_security_panel_for_fallback_rule_confirm_hides_generic_fallback_hint(
     monkeypatch,
 ):
@@ -144,3 +150,32 @@ def test_display_security_panel_for_fallback_rule_confirm_hides_generic_fallback
     assert "用户业务数据变更需人工确认" in output
     assert "未能完成命令风险评估" not in output
 
+
+def test_handle_tool_confirmation_required_uses_panel_payload():
+    shell = _DummyShell()
+    captured: list[tuple[object, object]] = []
+    shell._get_user_confirmation = lambda remember_command=None, allow_remember=False: (
+        captured.append((remember_command, allow_remember)) or LLMCallbackResult.APPROVE
+    )
+    shell._display_security_panel = lambda data, panel_mode="confirm": captured.append(
+        ("panel", panel_mode, data.get("panel", {}))
+    )
+
+    event = LLMEvent(
+        event_type=LLMEventType.TOOL_CONFIRMATION_REQUIRED,
+        data={
+            "tool_name": "bash_exec",
+            "panel": {
+                "mode": "confirm",
+                "target": "echo hi",
+                "allow_remember": True,
+                "remember_key": "echo hi",
+            },
+        },
+        timestamp=time.time(),
+    )
+
+    result = handle_tool_confirmation_required(shell, event)
+
+    assert result == LLMCallbackResult.APPROVE
+    assert ("echo hi", True) in captured

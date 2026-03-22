@@ -12,7 +12,8 @@ from aish.interruption import ShellState
 from aish.offload import render_bash_output
 from aish.security.security_manager import (SecurityDecision,
                                             SimpleSecurityManager)
-from aish.tools.base import ToolBase
+from aish.tools.base import (ToolBase, ToolExecutionContext, ToolPanelSpec,
+                             ToolPreflightAction, ToolPreflightResult)
 from aish.tools.bash_executor import UnifiedBashExecutor
 from aish.tools.result import ToolResult
 
@@ -227,6 +228,115 @@ class BashTool(ToolBase):
         if not self._last_decision.allow:
             return False
         return bool(self._last_decision.require_confirmation)
+
+    def prepare_invocation(
+        self, tool_args: dict[str, object], context: ToolExecutionContext
+    ) -> ToolPreflightResult:
+        command = tool_args.get("code")
+        if not isinstance(command, str) or not command:
+            return ToolPreflightResult(action=ToolPreflightAction.EXECUTE)
+
+        interruption_manager = context.interruption_manager or self.interruption_manager
+        if interruption_manager:
+            interruption_manager.set_state(ShellState.SANDBOX_EVAL)
+
+        decision = self.security_manager.decide(
+            command,
+            is_ai_command=True,
+            cwd=context.cwd,
+        )
+        self._last_decision = decision
+
+        if interruption_manager:
+            interruption_manager.set_state(ShellState.NORMAL)
+
+        info = self.get_confirmation_info(command)
+        analysis_data = (
+            info.get("security_analysis", {}) if isinstance(info, dict) else {}
+        )
+        panel = ToolPanelSpec(
+            mode="confirm",
+            target=command,
+            analysis=analysis_data if isinstance(analysis_data, dict) else {},
+            allow_remember=True,
+            remember_key=command,
+        )
+
+        if (
+            isinstance(analysis_data, dict)
+            and analysis_data.get("fail_open") is True
+        ):
+            return ToolPreflightResult(action=ToolPreflightAction.EXECUTE)
+
+        if callable(context.is_approved) and context.is_approved(command):
+            return ToolPreflightResult(action=ToolPreflightAction.EXECUTE)
+
+        if not decision.allow:
+            reasons = (
+                analysis_data.get("reasons", [])
+                if isinstance(analysis_data, dict)
+                else []
+            )
+            reason_text = ", ".join(str(reason) for reason in reasons[:5] if reason)
+            blocked_msg = (
+                t("security.command_blocked_with_reason", reason=reason_text)
+                if reason_text
+                else t("security.command_blocked")
+            )
+            return ToolPreflightResult(
+                action=ToolPreflightAction.SHORT_CIRCUIT,
+                panel=ToolPanelSpec(
+                    mode="blocked",
+                    target=command,
+                    analysis=panel.analysis,
+                    allow_remember=True,
+                    remember_key=command,
+                ),
+                result=ToolResult(
+                    ok=False,
+                    output=blocked_msg,
+                    code=126,
+                    meta={"kind": "security_blocked", "reasons": reasons},
+                    stop_tool_chain=True,
+                ),
+            )
+
+        sandbox_info = (
+            analysis_data.get("sandbox", {}) if isinstance(analysis_data, dict) else {}
+        )
+        sandbox_reason = (
+            str(sandbox_info.get("reason", "")) if isinstance(sandbox_info, dict) else ""
+        )
+        fallback_rule_matched = bool(
+            analysis_data.get("fallback_rule_matched")
+            if isinstance(analysis_data, dict)
+            else False
+        )
+        skip_notice_panel = sandbox_reason in {
+            "sandbox_disabled",
+            "sandbox_disabled_by_policy",
+        } and not fallback_rule_matched
+
+        if decision.require_confirmation:
+            panel.mode = "confirm"
+            return ToolPreflightResult(
+                action=ToolPreflightAction.CONFIRM,
+                panel=panel,
+            )
+
+        risk_level = str(
+            analysis_data.get("risk_level", "UNKNOWN")
+            if isinstance(analysis_data, dict)
+            else "UNKNOWN"
+        ).upper()
+        panel.mode = "blocked" if risk_level in {"HIGH", "CRITICAL"} else "info"
+        if skip_notice_panel:
+            return ToolPreflightResult(action=ToolPreflightAction.EXECUTE)
+
+        return ToolPreflightResult(
+            action=ToolPreflightAction.EXECUTE,
+            panel=panel,
+        )
 
     def get_confirmation_info(self, code: Optional[str] = None) -> dict:
         """Get security information for confirmation dialog"""

@@ -5,9 +5,12 @@ import pytest
 
 from aish.config import ConfigModel
 from aish.context_manager import ContextManager
-from aish.llm import LLMCallbackResult, LLMSession
+from aish.llm import (LLMCallbackResult, LLMSession, ToolDispatchOutcome,
+                      ToolDispatchStatus)
 from aish.skills import SkillManager
 from aish.tools.ask_user import AskUserTool
+from aish.tools.base import (ToolBase, ToolExecutionContext, ToolPanelSpec,
+                             ToolPreflightAction, ToolPreflightResult)
 from aish.tools.result import ToolResult
 
 
@@ -126,9 +129,9 @@ async def test_handle_tool_calls_ask_user_user_input_required_breaks(monkeypatch
 
     async def fake_pre_execute_tool(tool_name, _tool_args):
         if tool_name == "ask_user":
-            return (
-                LLMCallbackResult.APPROVE,
-                ToolResult(
+            return ToolDispatchOutcome(
+                status=ToolDispatchStatus.EXECUTED,
+                result=ToolResult(
                     ok=False,
                     output="paused",
                     meta={"kind": "user_input_required", "reason": "cancelled"},
@@ -170,9 +173,9 @@ async def test_handle_tool_calls_system_diagnose_agent_sets_session_output():
 
     async def fake_pre_execute_tool(tool_name, _tool_args):
         assert tool_name == "system_diagnose_agent"
-        return (
-            LLMCallbackResult.APPROVE,
-            ToolResult(ok=True, output="diagnostic result"),
+        return ToolDispatchOutcome(
+            status=ToolDispatchStatus.EXECUTED,
+            result=ToolResult(ok=True, output="diagnostic result"),
         )
 
     with patch.object(
@@ -208,9 +211,9 @@ async def test_handle_tool_calls_bash_security_blocked_clears_session_output():
 
     async def fake_pre_execute_tool(tool_name, _tool_args):
         assert tool_name == "bash_exec"
-        return (
-            LLMCallbackResult.APPROVE,
-            ToolResult(
+        return ToolDispatchOutcome(
+            status=ToolDispatchStatus.SHORT_CIRCUIT,
+            result=ToolResult(
                 ok=False,
                 output="<stderr>blocked</stderr>",
                 meta={"kind": "security_blocked"},
@@ -237,24 +240,41 @@ async def test_pre_execute_tool_emits_blocked_panel_for_policy_fallback_rule(mon
     config = ConfigModel(model="test-model", api_key="test-key")
     session = LLMSession(config=config, skill_manager=SkillManager())
 
-    class _DummyBashTool:
-        description = "dummy bash"
-        called = False
+    class _DummyBashTool(ToolBase):
+        def __init__(self):
+            super().__init__(
+                name="bash_exec",
+                description="dummy bash",
+                parameters={"type": "object", "properties": {"code": {"type": "string"}}},
+            )
+            self.called = False
 
-        def need_confirm_before_exec(self, _arg):
-            return False
-
-        def get_confirmation_info(self, arg):
-            return {
-                "command": arg,
-                "security_decision": {"allow": False, "require_confirmation": False},
-                "security_analysis": {
-                    "risk_level": "HIGH",
-                    "sandbox": {"enabled": False, "reason": "sandbox_disabled_by_policy"},
-                    "fallback_rule_matched": True,
-                    "reasons": ["系统配置目录，误修改会导致严重故障"],
-                },
-            }
+        def prepare_invocation(
+            self, tool_args: dict[str, object], context: ToolExecutionContext
+        ) -> ToolPreflightResult:
+            _ = context
+            return ToolPreflightResult(
+                action=ToolPreflightAction.SHORT_CIRCUIT,
+                panel=ToolPanelSpec(
+                    mode="blocked",
+                    target=str(tool_args.get("code")),
+                    analysis={
+                        "risk_level": "HIGH",
+                        "sandbox": {
+                            "enabled": False,
+                            "reason": "sandbox_disabled_by_policy",
+                        },
+                        "fallback_rule_matched": True,
+                        "reasons": ["系统配置目录，误修改会导致严重故障"],
+                    },
+                ),
+                result=ToolResult(
+                    ok=False,
+                    output="blocked",
+                    meta={"kind": "security_blocked"},
+                    stop_tool_chain=True,
+                ),
+            )
 
         async def __call__(self, code: str):
             self.called = True
@@ -264,10 +284,177 @@ async def test_pre_execute_tool_emits_blocked_panel_for_policy_fallback_rule(mon
     emitted: list[tuple[object, dict]] = []
     monkeypatch.setattr(session, "emit_event", lambda event_type, data=None: emitted.append((event_type, data or {})))
 
-    goon, _result = await session.pre_execute_tool("bash_exec", {"code": "sudo rm /etc/aish/123"})
+    outcome = await session.pre_execute_tool("bash_exec", {"code": "sudo rm /etc/aish/123"})
 
-    assert goon == LLMCallbackResult.CONTINUE
+    assert outcome.status == ToolDispatchStatus.SHORT_CIRCUIT
     assert emitted
-    assert emitted[0][1].get("panel_mode") == "blocked"
-    assert _result.meta.get("kind") == "security_blocked"
+    assert emitted[0][1].get("panel", {}).get("mode") == "blocked"
+    assert outcome.result.meta.get("kind") == "security_blocked"
     assert session.tools["bash_exec"].called is False
+
+
+@pytest.mark.anyio
+async def test_pre_execute_tool_info_panel_executes_tool(monkeypatch):
+    config = ConfigModel(model="test-model", api_key="test-key")
+    session = LLMSession(config=config, skill_manager=SkillManager())
+
+    class _InfoTool(ToolBase):
+        def __init__(self):
+            super().__init__(
+                name="info_tool",
+                description="info tool",
+                parameters={"type": "object", "properties": {"value": {"type": "string"}}},
+            )
+
+        def prepare_invocation(
+            self, tool_args: dict[str, object], context: ToolExecutionContext
+        ) -> ToolPreflightResult:
+            _ = context
+            return ToolPreflightResult(
+                action=ToolPreflightAction.EXECUTE,
+                panel=ToolPanelSpec(mode="info", target=str(tool_args.get("value"))),
+            )
+
+        def __call__(self, value: str):
+            return ToolResult(ok=True, output=f"echo:{value}")
+
+    session.tools["info_tool"] = _InfoTool()
+    emitted: list[tuple[object, dict]] = []
+    monkeypatch.setattr(
+        session,
+        "emit_event",
+        lambda event_type, data=None: emitted.append((event_type, data or {})),
+    )
+
+    outcome = await session.pre_execute_tool("info_tool", {"value": "hello"})
+
+    assert outcome.status == ToolDispatchStatus.EXECUTED
+    assert outcome.result.output == "echo:hello"
+    assert emitted
+    assert emitted[0][1].get("panel", {}).get("mode") == "info"
+
+
+@pytest.mark.anyio
+async def test_pre_execute_tool_legacy_hooks_use_get_pre_execute_subject(monkeypatch):
+    config = ConfigModel(model="test-model", api_key="test-key")
+    session = LLMSession(config=config, skill_manager=SkillManager())
+
+    class _LegacyTool(ToolBase):
+        def __init__(self):
+            super().__init__(
+                name="legacy_tool",
+                description="legacy tool",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "dangerous": {"type": "string"},
+                        "file_path": {"type": "string"},
+                    },
+                },
+            )
+            self.seen_subject = None
+
+        def get_pre_execute_subject(self, tool_args: dict[str, object]) -> object:
+            return tool_args.get("dangerous")
+
+        def need_confirm_before_exec(self, subject: object) -> bool:
+            self.seen_subject = subject
+            return True
+
+        def get_confirmation_info(self, subject: object) -> dict:
+            return {
+                "target": "/tmp/demo.txt",
+                "preview": f"subject={subject}",
+            }
+
+        def __call__(self, dangerous: str, file_path: str):
+            return ToolResult(ok=True, output=f"{dangerous}:{file_path}")
+
+    session.tools["legacy_tool"] = _LegacyTool()
+    monkeypatch.setattr(session, "request_confirmation", lambda *_args, **_kwargs: LLMCallbackResult.APPROVE)
+
+    outcome = await session.pre_execute_tool(
+        "legacy_tool",
+        {"dangerous": "rm -rf", "file_path": "/tmp/demo.txt"},
+    )
+
+    assert outcome.status == ToolDispatchStatus.EXECUTED
+    assert session.tools["legacy_tool"].seen_subject == "rm -rf"
+    assert outcome.result.output == "rm -rf:/tmp/demo.txt"
+
+
+@pytest.mark.anyio
+async def test_pre_execute_tool_write_file_confirmation_uses_panel_target_preview(
+    monkeypatch,
+):
+    config = ConfigModel(model="test-model", api_key="test-key")
+    session = LLMSession(config=config, skill_manager=SkillManager())
+    captured: dict[str, object] = {}
+
+    def _request_confirmation(_event_type, data, **_kwargs):
+        captured.update(data)
+        return LLMCallbackResult.DENY
+
+    monkeypatch.setattr(session, "request_confirmation", _request_confirmation)
+
+    outcome = await session.pre_execute_tool(
+        "write_file",
+        {"file_path": "/tmp/demo.txt", "content": "hello world"},
+    )
+
+    assert outcome.status == ToolDispatchStatus.REJECTED
+    assert captured.get("panel", {}).get("target") == "/tmp/demo.txt"
+    assert captured.get("panel", {}).get("preview") == "hello world"
+
+
+@pytest.mark.anyio
+async def test_pre_execute_tool_write_file_confirmation_keeps_full_long_preview(
+    monkeypatch,
+):
+    config = ConfigModel(model="test-model", api_key="test-key")
+    session = LLMSession(config=config, skill_manager=SkillManager())
+    captured: dict[str, object] = {}
+    long_content = "A" * 150 + "TAIL"
+
+    def _request_confirmation(_event_type, data, **_kwargs):
+        captured.update(data)
+        return LLMCallbackResult.DENY
+
+    monkeypatch.setattr(session, "request_confirmation", _request_confirmation)
+
+    outcome = await session.pre_execute_tool(
+        "write_file",
+        {"file_path": "/tmp/demo.txt", "content": long_content},
+    )
+
+    assert outcome.status == ToolDispatchStatus.REJECTED
+    assert captured.get("panel", {}).get("preview") == long_content
+
+
+@pytest.mark.anyio
+async def test_pre_execute_tool_edit_file_confirmation_uses_panel_target_preview(
+    monkeypatch,
+):
+    config = ConfigModel(model="test-model", api_key="test-key")
+    session = LLMSession(config=config, skill_manager=SkillManager())
+    captured: dict[str, object] = {}
+
+    def _request_confirmation(_event_type, data, **_kwargs):
+        captured.update(data)
+        return LLMCallbackResult.DENY
+
+    monkeypatch.setattr(session, "request_confirmation", _request_confirmation)
+
+    outcome = await session.pre_execute_tool(
+        "edit_file",
+        {
+            "file_path": "/tmp/demo.txt",
+            "old_string": "old",
+            "new_string": "new",
+            "replace_all": True,
+        },
+    )
+
+    assert outcome.status == ToolDispatchStatus.REJECTED
+    assert captured.get("panel", {}).get("target") == "/tmp/demo.txt"
+    assert captured.get("panel", {}).get("preview") == "Replace all: old -> new"
