@@ -1,4 +1,4 @@
-"""PTY command execution implementation extracted from AIShell."""
+"""PTY command execution implementation for the shell core."""
 
 from __future__ import annotations
 

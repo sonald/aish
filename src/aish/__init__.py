@@ -4,14 +4,15 @@ __version__ = "0.1.3"
 
 # Avoid importing heavy modules (and any side-effects) at package import time.
 # This matters for system services like aish-sandbox, which only need aish.sandboxd.
-__all__ = ["AIShell", "main"]
-
-
 def __getattr__(name: str):
-    if name == "AIShell":
-        from .shell import AIShell as _AIShell
+    if name == "PTYAIShell":
+        from .shell_pty import PTYAIShell as _PTYAIShell
 
-        return _AIShell
+        return _PTYAIShell
+    if name == "run_shell":
+        from .shell_pty import run_shell as _run_shell
+
+        return _run_shell
     if name == "main":
         from .cli import main as _main
 

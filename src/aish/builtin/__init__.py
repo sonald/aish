@@ -4,7 +4,7 @@ This module provides stateless command processing logic for shell built-in comma
 like cd, pushd, popd, export, unset, etc.
 
 The handlers are designed to be used by both:
-- AIShell (for user commands)
+- the interactive shell core (for user commands)
 - BashTool (for AI-generated commands)
 """
 

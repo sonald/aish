@@ -17,8 +17,8 @@ class EnvironmentManager:
         self._load_system_env()
 
         # Directory stack for pushd/popd commands
-        # This is shared between AIShell and BashTool
-        self.directory_stack: Any | None = None  # Will be set by AIShell
+        # This is shared between the shell core and BashTool
+        self.directory_stack: Any | None = None  # Will be set by the shell core
 
     def _load_system_env(self):
         """Load system environment variables into internal storage"""

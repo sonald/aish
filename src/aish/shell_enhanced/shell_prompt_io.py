@@ -1,4 +1,4 @@
-"""Prompt and interactive UI helpers extracted from AIShell."""
+"""Prompt and interactive UI helpers for the shell core."""
 
 from __future__ import annotations
 
@@ -311,7 +311,7 @@ async def get_user_input(
             return ""
 
         # Clear pending correction if user didn't type only semicolon
-        # If they typed only ";" or "；", preserve it for shell.py to handle
+        # If they typed only ";" or "；", preserve it for the current shell core to handle
         if (
             self._pending_error_correction is not None
             and result.strip() not in (";", "；")

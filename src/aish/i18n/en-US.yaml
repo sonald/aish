@@ -265,6 +265,11 @@ shell:
   error_correction:
     press_semicolon_hint: "Command execution failed. Type ; and press Enter to auto-analyze and fix, or enter the next command directly."
     corrected_command_label: "Suggested fix:"
+    corrected_command_title: "💡 Corrected command:"
+    confirm_execute_prefix: "Execute: "
+    confirm_execute_suffix: "? (Y/n): "
+    no_valid_command: "Unable to determine correct command"
+    retry_hint: "Type ';' to tell AI what you want to do, and it will help find the right command"
 
   error:
     execution_error: "❌ Error during execution: {error}"

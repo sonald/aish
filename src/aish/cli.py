@@ -5,7 +5,6 @@ import sys
 from enum import Enum
 from typing import Optional
 
-import anyio
 import typer
 import yaml
 from rich.console import Console
@@ -19,7 +18,6 @@ from .providers.openai_codex import OPENAI_CODEX_DEFAULT_CALLBACK_PORT
 from .providers.registry import (get_provider_by_id, get_provider_for_model,
                                  list_auth_capable_provider_ids,
                                  resolve_provider_metadata)
-from .shell import AIShell
 from .skills import SkillManager
 from .wizard.setup_wizard import (needs_interactive_setup,
                                   run_interactive_setup,
@@ -329,11 +327,6 @@ def run(
         "-c",
         help=t("cli.option.config"),
     ),
-    tui: bool = typer.Option(
-        False,
-        "--tui",
-        help="Enable TUI (Terminal User Interface) mode",
-    ),
 ):
     """Run the AI Shell"""
 
@@ -360,7 +353,7 @@ def run(
     # the key fields (version/model/config path) in a structured template.
     # Inject config file path for welcome rendering (ConfigModel allows extra fields).
     try:
-        effective_config.config_file = str(config.config_file)
+        setattr(effective_config, "config_file", str(config.config_file))
     except Exception:
         # Best-effort only; welcome screen will fall back to "-".
         pass
@@ -368,39 +361,17 @@ def run(
     skill_manager = SkillManager()
     skills = skill_manager.load_all_skills()
     try:
-        effective_config.skills_count = len(skills)
+        setattr(effective_config, "skills_count", len(skills))
     except Exception:
         pass
 
-    # Create and run the shell
-    shell = AIShell(
-        config=effective_config,
-        skill_manager=skill_manager,
-        config_manager=config,
-    )
+    from aish.shell_pty import run_shell as run_pty_shell
 
-    # Check if TUI mode is enabled (CLI flag or config)
-    enable_tui = tui or effective_config.tui.enabled
-
-    if enable_tui:
-        # Run in TUI mode
-        from aish.tui import TUIApp
-
-        tui_app = TUIApp(effective_config, shell)
-        shell._tui_app = tui_app
-
-        try:
-            anyio.run(tui_app.run)
-        except KeyboardInterrupt:
-            console.print("\n" + t("cli.startup.goodbye"), style="green")
-            sys.exit(0)
-    else:
-        # Run in standard mode
-        try:
-            anyio.run(shell.run)
-        except KeyboardInterrupt:
-            console.print("\n" + t("cli.startup.goodbye"), style="green")
-            sys.exit(0)
+    try:
+        run_pty_shell(effective_config, skill_manager, config)
+    except KeyboardInterrupt:
+        console.print("\n" + t("cli.startup.goodbye"), style="green")
+        sys.exit(0)
 
 
 @app.command(help=t("cli.setup_command_help"), cls=I18nTyperCommand)

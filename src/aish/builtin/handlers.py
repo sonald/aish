@@ -1,7 +1,7 @@
 """Built-in command handlers for aish shell.
 
 This module provides stateless command processing logic for shell built-in commands.
-Handlers are designed to be used by both AIShell (user commands) and BashTool (AI commands).
+Handlers are designed to be used by both the interactive shell core (user commands) and BashTool (AI commands).
 """
 
 import os

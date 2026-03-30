@@ -39,7 +39,7 @@ class TUIApp:
 
         Args:
             config: Configuration model with TUI settings
-            shell: Reference to AIShell instance for integration
+            shell: Reference to the shell core for integration
         """
         self.config = config
         self.shell = shell

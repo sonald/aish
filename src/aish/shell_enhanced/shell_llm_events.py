@@ -1,4 +1,4 @@
-"""LLM event routing utilities for AIShell."""
+"""LLM event routing utilities for the shell core."""
 
 from __future__ import annotations
 
