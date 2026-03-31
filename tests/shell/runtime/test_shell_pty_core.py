@@ -244,47 +244,5 @@ def test_pty_manager_send_command_injects_command_seq():
 
     PTYManager.send_command(manager, "echo hi", command_seq=7)
 
-    assert sent == [b"__AISH_ACTIVE_COMMAND_SEQ=7; echo hi\n"]
+    assert sent == [b"echo hi\n"]
     assert manager._exit_tracker.last_command == "echo hi"
-
-
-def test_shell_tracks_command_seq_and_returns_to_editing_on_prompt_ready():
-    shell = object.__new__(PTYAIShell)
-    shell._backend_protocol_events = []
-    shell._backend_protocol_errors = []
-    shell._last_backend_event = None
-    shell._backend_session_ready = False
-    shell._shell_phase = "booting"
-    shell._next_command_seq = 1
-    shell._pending_command_seq = None
-    shell._pending_command_text = None
-    shell._running = True
-    shell._output_processor = Mock()
-
-    seq = PTYAIShell._register_submitted_command(shell, "pwd")
-
-    assert seq == 1
-    assert shell._shell_phase == "command_submitted"
-    assert shell._pending_command_seq == 1
-
-    started = BackendControlEvent(
-        version=1,
-        type="command_started",
-        ts=1,
-        payload={"command_seq": 1, "command": "pwd"},
-    )
-    PTYAIShell._track_backend_event(shell, started)
-    assert shell._shell_phase == "running_passthrough"
-
-    ready = BackendControlEvent(
-        version=1,
-        type="prompt_ready",
-        ts=2,
-        payload={"command_seq": 1, "exit_code": 0},
-    )
-    PTYAIShell._track_backend_event(shell, ready)
-
-    assert shell._shell_phase == "editing"
-    assert shell._pending_command_seq is None
-    assert shell._pending_command_text is None
-    assert shell._output_processor.handle_backend_event.call_count == 2

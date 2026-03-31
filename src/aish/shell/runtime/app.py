@@ -918,7 +918,6 @@ class PTYAIShell:
             self._output_processor,
             placeholder_manager=self._placeholder_manager,
             interruption_manager=self.interruption_manager,
-            command_submit_callback=self._register_submitted_command,
             history_manager=self.history_manager,
         )
 
@@ -931,10 +930,7 @@ class PTYAIShell:
         try:
             data = os.read(sys.stdin.fileno(), 4096)
             if data:
-                if self._shell_phase in {"command_submitted", "running_passthrough"} and self._pty_manager:
-                    self._pty_manager.send(data)
-                else:
-                    self._input_router.handle_input(data)
+                self._input_router.handle_input(data)
             else:
                 self._running = False
         except OSError:
@@ -984,9 +980,18 @@ class PTYAIShell:
         if not command or not self._pty_manager:
             return None
 
-        seq = self._register_submitted_command(command)
-        self._pty_manager.send_command(command, command_seq=seq)
-        return seq
+        is_exit_cmd = command in ("exit", "logout") or command.startswith(
+            ("exit ", "logout ")
+        )
+        if self._output_processor is not None:
+            if is_exit_cmd:
+                self._output_processor.set_filter_exit_echo(True)
+                self._user_requested_exit = True
+            else:
+                self._output_processor.set_waiting_for_result(True, command)
+
+        self._pty_manager.send_command(command)
+        return None
 
     def _track_backend_event(self, event: BackendControlEvent) -> None:
         self._last_backend_event = event

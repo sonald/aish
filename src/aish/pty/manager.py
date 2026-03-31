@@ -180,27 +180,20 @@ PS1=""  # Will be set by PROMPT_COMMAND
         if self._running:
             return
 
-        control_read, control_write = os.pipe()
-        os.set_inheritable(control_write, True)
-        self._control_fd = control_read
-        self._control_write_fd = control_write
+        # Keep the control channel disabled on the stable path for now.
+        self._control_fd = None
+        self._control_write_fd = None
 
         self._child_pid, self._master_fd = pty.fork()
 
         if self._child_pid == 0:
             # Child process: exec bash
-            try:
-                os.close(control_read)
-            except OSError:
-                pass
-
             os.chdir(self._cwd)
 
             # Build environment
             env = dict(os.environ)
             env.update(self._env)
             env["TERM"] = "xterm-256color"
-            env["AISH_CONTROL_FD"] = str(control_write)
 
             # Use our rcfile wrapper to set up exit code tracking while preserving user's config
             rcfile_path = os.path.join(os.path.dirname(__file__), "bash_rc_wrapper.sh")
@@ -219,18 +212,9 @@ PS1=""  # Will be set by PROMPT_COMMAND
                 )
             os._exit(1)
 
-        # Parent process
-        try:
-            os.close(control_write)
-        except OSError:
-            pass
-        self._control_write_fd = None
-
         # Set non-blocking
         flags = fcntl.fcntl(self._master_fd, fcntl.F_GETFL)
         fcntl.fcntl(self._master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-        control_flags = fcntl.fcntl(self._control_fd, fcntl.F_GETFL)
-        fcntl.fcntl(self._control_fd, fcntl.F_SETFL, control_flags | os.O_NONBLOCK)
 
         # Set window size
         set_winsize(self._master_fd, self._rows, self._cols)
@@ -317,10 +301,7 @@ PS1=""  # Will be set by PROMPT_COMMAND
     def send_command(self, command: str, command_seq: int | None = None) -> None:
         """Send a command (with newline) to bash."""
         self._exit_tracker.set_last_command(command.strip())
-        command_to_send = command
-        if command_seq is not None:
-            command_to_send = f"__AISH_ACTIVE_COMMAND_SEQ={command_seq}; {command}"
-        self.send((command_to_send + "\n").encode())
+        self.send((command + "\n").encode())
 
     def resize(self, rows: int, cols: int) -> None:
         """Resize terminal."""
