@@ -251,20 +251,18 @@ __aish_prompt_command() {
     if [[ "$__AISH_CUSTOM_PROMPT_ENABLED" == "1" ]]; then
         unset PS1
         __aish_generate_prompt "$exit_code"
+    else
+        PS1=''
     fi
     __AISH_AT_PROMPT=1
     __aish_emit_prompt_ready "$exit_code"
-
-    local cmd=$(HISTTIMEFORMAT='' history 1 2>/dev/null | sed 's/^\s*[0-9]\+\s*//; s/^__AISH_ACTIVE_COMMAND_SEQ=[0-9]\+; //')
-    cmd="${cmd//]/%5D}"
-    printf "[AISH_EXIT:%s:%s]" "$exit_code" "$cmd"
 }
 
 # Save original PROMPT_COMMAND before we override it
 __AISH_ORIGINAL_PROMPT_COMMAND="$PROMPT_COMMAND"
 
-# Keep the user's prompt by default, only enable the custom aish prompt
-# when AISH_ENABLE_CUSTOM_PROMPT=1 is set.
+# Keep the backend prompt silent by default; only enable the custom aish
+# prompt when AISH_ENABLE_CUSTOM_PROMPT=1 is set.
 PROMPT_COMMAND='__aish_prompt_command'
 
 trap '__aish_on_exit' EXIT

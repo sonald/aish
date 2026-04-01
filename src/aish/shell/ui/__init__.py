@@ -1,7 +1,6 @@
 """UI-layer shell components."""
 
 from .interaction import PTYUserInteraction
-from .placeholder import PlaceholderManager
 from .prompt_io import (
     display_security_panel,
     get_user_confirmation,
@@ -14,7 +13,6 @@ from .suggestions import SuggestionEngine
 
 __all__ = [
     "PTYUserInteraction",
-    "PlaceholderManager",
     "SuggestionEngine",
     "display_security_panel",
     "get_user_confirmation",

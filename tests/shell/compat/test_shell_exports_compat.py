@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from aish import PTYAIShell, run_shell
-from aish.pty import ExitCodeTracker, PTYManager
+from aish.pty import CommandState, PTYManager
 from aish.shell import CommandResult, CommandStatus
 
 
@@ -9,7 +9,7 @@ def test_shell_exports_stable_symbols():
     assert PTYAIShell is not None
     assert callable(run_shell)
     assert PTYManager is not None
-    assert ExitCodeTracker is not None
+    assert CommandState is not None
     assert CommandStatus.SUCCESS.value == "success"
 
     result = CommandResult(

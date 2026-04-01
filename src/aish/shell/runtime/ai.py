@@ -6,10 +6,8 @@ import anyio
 import asyncio
 import os
 import re
-import select
 import signal
 import sys
-import time
 from typing import TYPE_CHECKING, Optional
 
 from ...context_manager import ContextManager
@@ -98,6 +96,21 @@ class AIHandler:
             return None
 
     @staticmethod
+    def _shutdown_loop(loop: asyncio.AbstractEventLoop) -> None:
+        pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+        for task in pending:
+            task.cancel()
+
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+
+        loop.run_until_complete(loop.shutdown_asyncgens())
+
+        shutdown_default_executor = getattr(loop, "shutdown_default_executor", None)
+        if callable(shutdown_default_executor):
+            loop.run_until_complete(shutdown_default_executor())
+
+    @staticmethod
     def _run_async_in_thread(coro, cancellation_token=None):
         """Run an async coroutine in a separate thread with its own event loop.
 
@@ -116,9 +129,7 @@ class AIHandler:
             except BaseException as e:
                 exc_box[0] = e
             finally:
-                for task in asyncio.all_tasks(loop):
-                    task.cancel()
-                loop.run_until_complete(asyncio.sleep(0))
+                AIHandler._shutdown_loop(loop)
                 loop.close()
 
         pool = ThreadPoolExecutor(max_workers=1)
@@ -188,10 +199,11 @@ class AIHandler:
         shell._user_requested_exit = False
 
         # Save input buffer before AI call for potential restore
-        if hasattr(shell, '_input_router') and shell._input_router:
-            current_cmd = shell._input_router._current_cmd
-            if current_cmd:
-                shell.interruption_manager.save_input_buffer(current_cmd)
+        current_cmd = ""
+        if hasattr(shell, "get_edit_buffer_text"):
+            current_cmd = shell.get_edit_buffer_text()
+        if current_cmd:
+            shell.interruption_manager.save_input_buffer(current_cmd)
 
         shell.interruption_manager.set_state(ShellState.AI_THINKING)
         shell.operation_in_progress = True
@@ -231,43 +243,15 @@ class AIHandler:
 
         return response, was_cancelled
 
-    def _trigger_prompt_and_wait(self) -> None:
-        """Trigger prompt redraw and wait for PTY output."""
-        self._trigger_prompt_redraw()
-        self.pty_manager.send(b"\n")
-        max_wait = 0.2
-        start_wait = time.time()
-        while (time.time() - start_wait) < max_wait:
-            ready, _, _ = select.select(
-                [self.pty_manager._master_fd], [], [], 0.05
-            )
-            if ready:
-                try:
-                    data = os.read(self.pty_manager._master_fd, 4096)
-                    if data:
-                        cleaned = self.pty_manager.exit_tracker.parse_and_update(data)
-                        cleaned = cleaned.lstrip(b"\r\n")
-                        if cleaned:
-                            sys.stdout.buffer.write(cleaned)
-                            sys.stdout.buffer.flush()
-                except OSError:
-                    break
-
     def handle_error_correction(self) -> None:
         """Handle error correction."""
-        tracker = self.pty_manager.exit_tracker
-
-        if tracker.last_exit_code == 0:
+        if self.pty_manager.last_exit_code in (0, 130):
             print("\r\033[KNo previous error to fix.")
-            self._trigger_prompt_redraw()
-            self._set_raw_mode()
             return
 
-        cmd = tracker.last_command
+        cmd = self.pty_manager.last_command
         if not cmd:
             print("\r\033[KNo previous command to fix.")
-            self._trigger_prompt_redraw()
-            self._set_raw_mode()
             return
 
         try:
@@ -286,7 +270,7 @@ class AIHandler:
 
                     prompt = f"""<command_result>
 Command: {cmd}
-Exit code: {tracker.last_exit_code}
+Exit code: {self.pty_manager.last_exit_code}
 </command_result>
 
 Please analyze the error and suggest a fix. Check the shell history context above for the actual error output."""
@@ -321,13 +305,8 @@ Please analyze the error and suggest a fix. Check the shell history context abov
                 if corrected_cmd:
                     executed_cmd = self._ask_execute_command(corrected_cmd)
 
-            if not executed_cmd:
-                self._trigger_prompt_and_wait()
-
         except Exception as error:
             print(f"\r\033[KError: {error}")
-        finally:
-            self._set_raw_mode()
 
     def handle_question(self, question: str) -> None:
         """Handle AI question."""
@@ -374,20 +353,8 @@ Please analyze the error and suggest a fix. Check the shell history context abov
             if response:
                 self._display_ai_response(response)
 
-            self._trigger_prompt_and_wait()
-
         except Exception as error:
             print(f"\r\033[KError: {error}")
-        finally:
-            self._set_raw_mode()
-
-    def _trigger_prompt_redraw(self) -> None:
-        """Trigger bash to redraw its prompt by sending SIGWINCH."""
-        if self.pty_manager._child_pid:
-            try:
-                os.kill(self.pty_manager._child_pid, signal.SIGWINCH)
-            except Exception:
-                pass
 
     def _get_console(self):
         """Get the shared Console instance, falling back to a new one if needed."""
@@ -455,11 +422,5 @@ Please analyze the error and suggest a fix. Check the shell history context abov
         if confirmed:
             shell = self._require_shell()
             shell.submit_backend_command(command)
-            try:
-                ready, _, _ = select.select([self.pty_manager._master_fd], [], [], 0.1)
-                if ready:
-                    os.read(self.pty_manager._master_fd, 4096)
-            except Exception:
-                pass
             return True
         return False

@@ -414,3 +414,71 @@ class HistoryManager:
     def get_session_uuid(self) -> str:
         """Get current session UUID."""
         return self.session_uuid
+
+    def search_prefix_sync(
+        self,
+        prefix: str,
+        session_uuid: Optional[str] = None,
+    ) -> Optional[str]:
+        """Return the most recent command starting with prefix."""
+        prefix = str(prefix or "")
+        if not prefix:
+            return None
+
+        params: list[Any] = [f"{prefix}%"]
+        where = "WHERE command LIKE ?"
+        if session_uuid:
+            where += " AND session_uuid = ?"
+            params.append(session_uuid)
+
+        cursor = self._conn.execute(
+            f"""
+            SELECT command
+            FROM command_history
+            {where}
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            tuple(params),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return str(row[0])
+
+    def get_recent_commands_sync(
+        self,
+        limit: int = 200,
+        session_uuid: Optional[str] = None,
+    ) -> list[str]:
+        """Return recent commands in chronological order for prompt history."""
+        if limit <= 0:
+            return []
+
+        params: list[Any] = []
+        where = ""
+        if session_uuid:
+            where = "WHERE session_uuid = ?"
+            params.append(session_uuid)
+
+        cursor = self._conn.execute(
+            f"""
+            SELECT command
+            FROM command_history
+            {where}
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            tuple([*params, limit]),
+        )
+        rows = cursor.fetchall()
+
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for row in reversed(rows):
+            command = str(row[0] or "").strip()
+            if not command or command in seen:
+                continue
+            seen.add(command)
+            ordered.append(command)
+        return ordered

@@ -26,7 +26,7 @@ from ...context_manager import ContextManager, MemoryType
 from ...history_manager import HistoryManager
 from ...i18n import t
 from ...logging_utils import set_session_uuid
-from ...pty.control_protocol import BackendControlEvent, decode_control_chunk
+from ...pty.control_protocol import BackendControlEvent
 from ...prompts import PromptManager
 from ...pty import PTYManager
 from ...session_store import SessionRecord, SessionStore
@@ -41,9 +41,8 @@ from .ai import AIHandler
 from .events import LLMEventRouter
 from ..ui.interaction import PTYUserInteraction
 from .output import OutputProcessor
-from ..ui.placeholder import PlaceholderManager
+from ..ui.editor import ShellPromptController
 from ..ui.prompt_io import display_security_panel, get_user_confirmation, handle_interaction_required
-from .router import InputRouter
 
 if TYPE_CHECKING:
     from ...llm import LLMSession, LLMEventType
@@ -80,7 +79,7 @@ class PTYAIShell:
         )
 
         self._pty_manager: Optional[PTYManager] = None
-        self._input_router: Optional[InputRouter] = None
+        self._prompt_controller: Optional[ShellPromptController] = None
         self._output_processor: Optional[OutputProcessor] = None
         self._ai_handler: Optional[AIHandler] = None
         self._running = False
@@ -160,7 +159,7 @@ class PTYAIShell:
 
         self.user_interaction: PTYUserInteraction = PTYUserInteraction()
         self._approved_ai_commands: set[str] = set()
-        self._placeholder_manager: Optional[PlaceholderManager] = None
+        self._editing_buffer_text: str = ""
         self._backend_control_buffer: bytes = b""
         self._backend_protocol_events: list[BackendControlEvent] = []
         self._backend_protocol_errors: list[str] = []
@@ -170,6 +169,7 @@ class PTYAIShell:
         self._next_command_seq: int = 1
         self._pending_command_seq: Optional[int] = None
         self._pending_command_text: Optional[str] = None
+        self._current_cwd: str = os.getcwd()
 
         self._last_exit_code: int = 0
         self._shell_preview_bytes: int = 4096
@@ -274,8 +274,9 @@ class PTYAIShell:
         if self.current_live:
             self.current_live.stop()
 
-        self.console.print()
-        self._at_line_start = True
+        if not self._at_line_start:
+            self.console.print()
+            self._at_line_start = True
 
         self.current_live = Live(console=self.console, auto_refresh=False, transient=True)
         self.current_live.start()
@@ -600,62 +601,25 @@ class PTYAIShell:
         self._setup_components()
 
         self._running = True
-
-        from ...cancellation import CancellationReason
-
-        async def _main_loop():
-            with anyio.open_signal_receiver(signal.SIGINT) as sigs:
-                signal_scope = anyio.CancelScope()
-
-                async def signal_handler():
-                    try:
-                        with signal_scope:
-                            async for _ in sigs:
-                                # Dedup: if router already handled this
-                                # interrupt, skip signal-level handling
-                                if not self.interruption_manager.try_acquire_interrupt():
-                                    continue
-                                if self._current_op_scope is not None:
-                                    self._current_op_scope.cancel()
-                                self.llm_session.cancellation_token.cancel(
-                                    CancellationReason.USER_INTERRUPT,
-                                    "SIGINT received",
-                                )
-                    except anyio.get_cancelled_exc_class():
-                        pass
-
-                async def _loop_body():
-                    self._set_raw_mode()
-
-                    while self._running:
-                        try:
-                            read_fds = [sys.stdin.fileno()]
-                            if self._pty_manager and self._pty_manager._master_fd is not None:
-                                read_fds.append(self._pty_manager._master_fd)
-                            if self._pty_manager and self._pty_manager.control_fd is not None:
-                                read_fds.append(self._pty_manager.control_fd)
-
-                            ready, _, _ = select.select(read_fds, [], [], 0.05)
-                        except (ValueError, OSError):
-                            break
-
-                        for fd in ready:
-                            if fd == sys.stdin.fileno():
-                                self._handle_stdin()
-                            elif self._pty_manager and fd == self._pty_manager.control_fd:
-                                self._handle_control_event()
-                            elif self._pty_manager and self._pty_manager._master_fd:
-                                self._handle_pty_output()
-
-                        await anyio.sleep(0)
-
-                async with anyio.create_task_group() as tg:
-                    tg.start_soon(signal_handler)
-                    await _loop_body()
-                    signal_scope.cancel()
-
         try:
-            anyio.run(_main_loop)
+            self._wait_for_backend_ready()
+            while self._running:
+                self._drain_backend_io(timeout=0.0)
+                if not self._running:
+                    break
+
+                if self._shell_phase != "editing":
+                    self._passthrough_until_prompt_ready()
+                    continue
+
+                line = self._prompt_for_command()
+                if line is None:
+                    continue
+
+                self._handle_prompt_submission(line)
+
+                if self._shell_phase in ("command_submitted", "running_passthrough"):
+                    self._passthrough_until_prompt_ready()
         except KeyboardInterrupt:
             pass
         finally:
@@ -888,12 +852,13 @@ class PTYAIShell:
             rows, cols = 24, 80
 
         self._pty_manager = PTYManager(
-            rows=rows, cols=cols, cwd=os.getcwd(), use_output_thread=False
+            rows=rows, cols=cols, cwd=self._current_cwd, use_output_thread=False
         )
         self._pty_manager.start()
         time.sleep(0.2)
 
     def _setup_components(self) -> None:
+        self.user_interaction._original_termios = self._original_termios
         self._ai_handler = AIHandler(
             self._pty_manager,
             self.llm_session,
@@ -905,21 +870,15 @@ class PTYAIShell:
             console=self.console,
         )
         self._ai_handler.shell = self
-        self._placeholder_manager = PlaceholderManager.from_environment(
-            interruption_manager=self.interruption_manager
-        )
         self._output_processor = OutputProcessor(
             pty_manager=self._pty_manager,
-            placeholder_manager=self._placeholder_manager,
             shell=self,
         )
-        self._input_router = InputRouter(
-            self._pty_manager,
-            self._ai_handler,
-            self._output_processor,
-            placeholder_manager=self._placeholder_manager,
-            interruption_manager=self.interruption_manager,
+        self._prompt_controller = ShellPromptController(
             history_manager=self.history_manager,
+            interruption_manager=self.interruption_manager,
+            on_buffer_change=self._set_edit_buffer_text,
+            cwd_provider=lambda: self._current_cwd,
         )
 
         # Wire PTY manager and context manager to BashTool for AI tool execution
@@ -927,15 +886,140 @@ class PTYAIShell:
             self.llm_session.bash_tool.pty_manager = self._pty_manager
             self.llm_session.bash_tool.context_manager = self.context_manager
 
-    def _handle_stdin(self) -> None:
+    def _set_edit_buffer_text(self, text: str) -> None:
+        self._editing_buffer_text = text
+
+    def get_edit_buffer_text(self) -> str:
+        return self._editing_buffer_text
+
+    def _prompt_for_command(self) -> str | None:
+        if self._prompt_controller is None:
+            self._running = False
+            return None
+
+        self._restore_terminal()
+        self._shell_phase = "editing"
+        try:
+            line = self._prompt_controller.prompt()
+        except KeyboardInterrupt:
+            self._editing_buffer_text = ""
+            self.console.print("^C", style="dim")
+            return None
+        except EOFError:
+            self._running = False
+            return None
+
+        self._editing_buffer_text = ""
+        self._at_line_start = True
+        return line
+
+    def _is_ai_prefixed_line(self, line: str) -> bool:
+        return line.startswith((";", "；"))
+
+    def _handle_prompt_submission(self, line: str) -> None:
+        line = line.rstrip("\r\n")
+        if not line.strip():
+            if self._pty_manager is not None:
+                self._pty_manager.clear_error_correction()
+            return
+
+        if self._prompt_controller is not None:
+            self._prompt_controller.remember_command(line)
+
+        if self._is_ai_prefixed_line(line):
+            prompt = line[1:].strip()
+            if self._ai_handler is None:
+                return
+            if prompt:
+                self._ai_handler.handle_question(prompt)
+            else:
+                self._ai_handler.handle_error_correction()
+            return
+
+        self.submit_backend_command(line)
+
+    def _drain_backend_io(self, timeout: float = 0.0) -> None:
+        if self._pty_manager is None:
+            return
+
+        read_fds: list[int] = []
+        if self._pty_manager._master_fd is not None:
+            read_fds.append(self._pty_manager._master_fd)
+        if self._pty_manager.control_fd is not None:
+            read_fds.append(self._pty_manager.control_fd)
+        if not read_fds:
+            return
+
+        try:
+            ready, _, _ = select.select(read_fds, [], [], timeout)
+        except (ValueError, OSError):
+            return
+
+        for fd in ready:
+            if self._pty_manager.control_fd is not None and fd == self._pty_manager.control_fd:
+                self._handle_control_event()
+            elif self._pty_manager._master_fd is not None and fd == self._pty_manager._master_fd:
+                self._handle_pty_output()
+
+    def _wait_for_backend_ready(self, timeout: float = 2.0) -> None:
+        deadline = time.monotonic() + timeout
+        while self._running and not self._backend_session_ready and time.monotonic() < deadline:
+            self._drain_backend_io(timeout=0.05)
+
+        if not self._backend_session_ready:
+            self._shell_phase = "editing"
+
+    def _passthrough_until_prompt_ready(self) -> None:
+        if self._pty_manager is None:
+            self._running = False
+            return
+
+        try:
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+        except Exception:
+            pass
+
+        self._set_raw_mode()
+        try:
+            while self._running and self._shell_phase != "editing":
+                read_fds = [sys.stdin.fileno()]
+                if self._pty_manager._master_fd is not None:
+                    read_fds.append(self._pty_manager._master_fd)
+                if self._pty_manager.control_fd is not None:
+                    read_fds.append(self._pty_manager.control_fd)
+
+                try:
+                    ready, _, _ = select.select(read_fds, [], [], 0.05)
+                except (ValueError, OSError):
+                    self._running = False
+                    break
+
+                for fd in ready:
+                    if fd == sys.stdin.fileno():
+                        self._handle_passthrough_stdin()
+                    elif self._pty_manager.control_fd is not None and fd == self._pty_manager.control_fd:
+                        self._handle_control_event()
+                    elif self._pty_manager._master_fd is not None and fd == self._pty_manager._master_fd:
+                        self._handle_pty_output()
+        finally:
+            self._restore_terminal()
+
+    def _handle_passthrough_stdin(self) -> None:
+        if self._pty_manager is None:
+            self._running = False
+            return
+
         try:
             data = os.read(sys.stdin.fileno(), 4096)
-            if data:
-                self._input_router.handle_input(data)
-            else:
-                self._running = False
         except OSError:
             self._running = False
+            return
+
+        if not data:
+            self._running = False
+            return
+
+        self._pty_manager.send(data)
 
     @staticmethod
     def _is_exit_command(command: str | None) -> bool:
@@ -952,8 +1036,7 @@ class PTYAIShell:
         if self._user_requested_exit:
             return True
 
-        tracker = getattr(self._pty_manager, "exit_tracker", None)
-        if self._is_exit_command(getattr(tracker, "last_command", None)):
+        if self._pty_manager and self._is_exit_command(self._pty_manager.last_command):
             return True
 
         return self._is_exit_command(self._pending_command_text)
@@ -962,8 +1045,7 @@ class PTYAIShell:
         try:
             data = os.read(self._pty_manager._master_fd, 1024 * 20)
             if data:
-                cleaned = self._pty_manager.exit_tracker.parse_and_update(data)
-                processed = self._output_processor.process(cleaned)
+                processed = self._output_processor.process(data)
                 if processed:
                     sys.stdout.buffer.write(processed)
                     sys.stdout.buffer.flush()
@@ -1002,6 +1084,8 @@ class PTYAIShell:
         if not command or not self._pty_manager:
             return None
 
+        seq = self._register_submitted_command(command)
+
         is_exit_cmd = command in ("exit", "logout") or command.startswith(
             ("exit ", "logout ")
         )
@@ -1011,17 +1095,39 @@ class PTYAIShell:
                 self._user_requested_exit = True
             else:
                 self._output_processor.set_waiting_for_result(True, command)
+            self._output_processor.prepare_user_command_echo(command, seq)
 
-        self._pty_manager.send_command(command)
-        return None
+        self._pty_manager.send_command(command, command_seq=seq, source="user")
+        return seq
+
+    def _sync_backend_cwd(self, cwd: object) -> None:
+        if not isinstance(cwd, str) or not cwd:
+            return
+
+        self._current_cwd = cwd
+        try:
+            os.chdir(cwd)
+        except Exception:
+            pass
+
+        try:
+            self.current_env_info = get_current_env_info()
+        except Exception:
+            pass
 
     def _track_backend_event(self, event: BackendControlEvent) -> None:
         self._last_backend_event = event
         self._backend_protocol_events.append(event)
         self._backend_protocol_events = self._backend_protocol_events[-50:]
 
+        self._sync_backend_cwd(event.payload.get("cwd"))
+
+        result = None
+        if self._pty_manager is not None:
+            result = self._pty_manager.handle_backend_event(event)
+
         if self._output_processor is not None:
-            self._output_processor.handle_backend_event(event)
+            self._output_processor.handle_backend_event(event, result=result)
 
         if event.type == "session_ready":
             self._backend_session_ready = True
@@ -1044,11 +1150,6 @@ class PTYAIShell:
                 self._pending_command_seq = None
                 self._pending_command_text = None
                 self._shell_phase = "editing"
-                # Ensure backend command errors never trigger hints on
-                # subsequent prompt redraws.
-                pty_mgr = getattr(self, "_pty_manager", None)
-                if pty_mgr is not None:
-                    pty_mgr.exit_tracker.mark_backend_error_suppressed()
         elif event.type == "shell_exiting":
             self._shell_phase = "recovery_exit"
             self._running = False
@@ -1067,11 +1168,7 @@ class PTYAIShell:
             self._record_backend_protocol_error("control channel closed")
             return
 
-        events, remainder, errors = decode_control_chunk(
-            self._backend_control_buffer,
-            data,
-        )
-        self._backend_control_buffer = remainder
+        events, errors = self._pty_manager.decode_control_events(data)
 
         for proto_err in errors:
             self._record_backend_protocol_error(proto_err)
@@ -1167,7 +1264,7 @@ class PTYAIShell:
         """
         try:
             # Save current directory before stopping
-            old_cwd = os.getcwd()
+            old_cwd = self._current_cwd
 
             # Stop the old PTY
             if self._pty_manager:
@@ -1192,8 +1289,6 @@ class PTYAIShell:
                 self._ai_handler.pty_manager = self._pty_manager
             if self._output_processor:
                 self._output_processor.pty_manager = self._pty_manager
-            if self._input_router:
-                self._input_router.pty_manager = self._pty_manager
             if self.llm_session and hasattr(self.llm_session, "bash_tool"):
                 self.llm_session.bash_tool.pty_manager = self._pty_manager
 

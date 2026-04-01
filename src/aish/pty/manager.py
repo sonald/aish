@@ -11,7 +11,8 @@ import threading
 import time
 from typing import Callable, Optional
 
-from .exit_tracker import ExitCodeTracker
+from .command_state import CommandResult, CommandState
+from .control_protocol import BackendControlEvent, decode_control_chunk
 
 
 def set_winsize(fd: int, row: int, col: int, xpix: int = 0, ypix: int = 0) -> None:
@@ -36,85 +37,6 @@ class PTYManager:
         # Later
         manager.stop()
     """
-
-    # Bash initialization to inject exit code marker and custom prompt
-    BASH_INIT = r'''
-# aish exit code tracking and prompt generation
-__aish_last_exit_code=0
-
-__aish_set_prompt() {
-    local exit_code=$?
-    __aish_last_exit_code=$exit_code
-    printf "[AISH_EXIT:%s]" "$exit_code"
-
-    # Build prompt dynamically
-    local prompt_parts=()
-
-    # Add model if available
-    if [ -n "$AISH_MODEL" ]; then
-        prompt_parts+=("\033[2m$AISH_MODEL\033[0m")
-    fi
-
-    # Add current directory (abbreviated)
-    local cwd="$PWD"
-    if [[ "$cwd" == "$HOME"* ]]; then
-        cwd="~${cwd#$HOME}"
-    fi
-    # Abbreviate: ~/nfs/xzx/github/aish -> ~/n/x/g/aish
-    local IFS='/' parts=($cwd)
-    local abbrev=""
-    for i in "${!parts[@]}"; do
-        local part="${parts[$i]}"
-        if [[ -z "$part" ]]; then
-            continue
-        fi
-        if [[ "$part" == "~" || $i -eq $((${#parts[@]}-1)) ]]; then
-            abbrev+="$part/"
-        else
-            abbrev+="${part:0:1}/"
-        fi
-    done
-    cwd="${abbrev%/}"
-    prompt_parts+=("\033[34m$cwd\033[0m")
-
-    # Add git branch if in repo
-    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        local branch="$(git branch --show-current 2>/dev/null || echo HEAD)"
-        if [[ "$branch" == "HEAD" ]]; then
-            prompt_parts+=("\033[2m$branch\033[0m")
-        else
-            prompt_parts+=("\033[35m$branch\033[0m")
-        fi
-    fi
-
-    # Join parts
-    local prompt=""
-    local separator=" | "
-    local first=true
-    for part in "${prompt_parts[@]}"; do
-        if $first; then
-            prompt="$part"
-            first=false
-        else
-            prompt="$prompt$separator$part"
-        fi
-    done
-
-    # Add prompt symbol
-    if [ "$exit_code" -eq 0 ]; then
-        prompt="$prompt \033[32m➜\033[0m "
-    else
-        prompt="$prompt \033[31m➜➜\033[0m "
-    fi
-
-    # Set PS1 for this prompt cycle
-    PS1="$prompt"
-}
-
-# Run before each prompt
-PROMPT_COMMAND="__aish_set_prompt"
-PS1=""  # Will be set by PROMPT_COMMAND
-'''
 
     def __init__(
         self,
@@ -141,8 +63,12 @@ PS1=""  # Will be set by PROMPT_COMMAND
         self._output_callback: Optional[Callable[[bytes], None]] = None
         self._exit_code_callback: Optional[Callable[[int], None]] = None
 
-        # Exit code tracking
-        self._exit_tracker = ExitCodeTracker()
+        # Event-based command lifecycle state
+        self._command_state = CommandState()
+        self._control_buffer = b""
+        self._completed_results: list[CommandResult] = []
+        self._completion_condition = threading.Condition()
+        self._next_backend_command_seq = -1
 
         # Lock for thread-safe operations
         self._lock = threading.Lock()
@@ -157,9 +83,19 @@ PS1=""  # Will be set by PROMPT_COMMAND
         return self._running and self._child_pid is not None
 
     @property
-    def exit_tracker(self) -> ExitCodeTracker:
-        """Get exit code tracker."""
-        return self._exit_tracker
+    def command_state(self) -> CommandState:
+        """Get command lifecycle state."""
+        return self._command_state
+
+    @property
+    def last_command(self) -> str:
+        """Return the last completed command text."""
+        return self._command_state.last_command
+
+    @property
+    def last_exit_code(self) -> int:
+        """Return the last completed command exit code."""
+        return self._command_state.last_exit_code
 
     @property
     def control_fd(self) -> Optional[int]:
@@ -180,20 +116,26 @@ PS1=""  # Will be set by PROMPT_COMMAND
         if self._running:
             return
 
-        # Keep the control channel disabled on the stable path for now.
-        self._control_fd = None
-        self._control_write_fd = None
+        self._control_fd, self._control_write_fd = os.pipe()
+        os.set_inheritable(self._control_write_fd, True)
 
         self._child_pid, self._master_fd = pty.fork()
 
         if self._child_pid == 0:
             # Child process: exec bash
             os.chdir(self._cwd)
+            if self._control_fd is not None:
+                try:
+                    os.close(self._control_fd)
+                except OSError:
+                    pass
 
             # Build environment
             env = dict(os.environ)
             env.update(self._env)
             env["TERM"] = "xterm-256color"
+            if self._control_write_fd is not None:
+                env["AISH_CONTROL_FD"] = str(self._control_write_fd)
 
             # Use our rcfile wrapper to set up exit code tracking while preserving user's config
             rcfile_path = os.path.join(os.path.dirname(__file__), "bash_rc_wrapper.sh")
@@ -212,9 +154,19 @@ PS1=""  # Will be set by PROMPT_COMMAND
                 )
             os._exit(1)
 
+        if self._control_write_fd is not None:
+            try:
+                os.close(self._control_write_fd)
+            except OSError:
+                pass
+            self._control_write_fd = None
+
         # Set non-blocking
         flags = fcntl.fcntl(self._master_fd, fcntl.F_GETFL)
         fcntl.fcntl(self._master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        if self._control_fd is not None:
+            control_flags = fcntl.fcntl(self._control_fd, fcntl.F_GETFL)
+            fcntl.fcntl(self._control_fd, fcntl.F_SETFL, control_flags | os.O_NONBLOCK)
 
         # Set window size
         set_winsize(self._master_fd, self._rows, self._cols)
@@ -236,20 +188,19 @@ PS1=""  # Will be set by PROMPT_COMMAND
         """Wait for bash to initialize."""
         start = time.time()
         while time.time() - start < timeout:
-            ready, _, _ = select.select([self._master_fd], [], [], 0.05)
-            if ready:
+            read_fds = [self._master_fd]
+            if self._control_fd is not None:
+                read_fds.append(self._control_fd)
+            ready, _, _ = select.select(read_fds, [], [], 0.05)
+            for fd in ready:
                 try:
-                    data = os.read(self._master_fd, 4096)
-                    # Process exit code markers
-                    cleaned = self._exit_tracker.parse_and_update(data)
-                    # Forward to callback if set (but typically discard during init)
-                    if cleaned and self._output_callback:
-                        try:
-                            self._output_callback(cleaned)
-                        except Exception:
-                            pass
+                    data = os.read(fd, 4096)
                 except OSError:
                     break
+                if not data:
+                    continue
+                if fd == self._control_fd:
+                    self._dispatch_control_chunk(data)
 
     def _output_loop(self) -> None:
         """Background thread to read and forward PTY output."""
@@ -258,30 +209,36 @@ PS1=""  # Will be set by PROMPT_COMMAND
         while self._running:
             try:
                 # Poll for data
-                ready, _, _ = select.select([self._master_fd], [], [], 0.01)
+                read_fds = [self._master_fd]
+                if self._control_fd is not None:
+                    read_fds.append(self._control_fd)
+                ready, _, _ = select.select(read_fds, [], [], 0.01)
                 if not ready:
                     continue
 
-                data = os.read(self._master_fd, max_read_bytes)
-                if not data:
-                    # EOF - bash exited
-                    self._running = False
-                    break
+                for fd in ready:
+                    data = os.read(fd, max_read_bytes)
+                    if not data:
+                        if fd == self._master_fd:
+                            self._running = False
+                            break
+                        continue
 
-                # Parse exit code markers and clean output
-                cleaned = self._exit_tracker.parse_and_update(data)
+                    if fd == self._control_fd:
+                        self._dispatch_control_chunk(data)
+                        continue
 
-                # In exec mode, buffer output instead of forwarding
-                if self._exec_mode.is_set():
-                    if cleaned:
-                        self._exec_buffer.extend(cleaned)
+                    if self._exec_mode.is_set():
+                        self._exec_buffer.extend(data)
+                    else:
+                        if data and self._output_callback:
+                            try:
+                                self._output_callback(data)
+                            except Exception:
+                                pass
                 else:
-                    # Forward cleaned output to callback
-                    if cleaned and self._output_callback:
-                        try:
-                            self._output_callback(cleaned)
-                        except Exception:
-                            pass
+                    continue
+                break
 
             except OSError:
                 self._running = False
@@ -298,18 +255,66 @@ PS1=""  # Will be set by PROMPT_COMMAND
             except OSError:
                 return 0
 
-    def send_command(self, command: str, command_seq: int | None = None) -> None:
+    def send_command(
+        self,
+        command: str,
+        command_seq: int | None = None,
+        source: str = "backend",
+    ) -> None:
         """Send a command (with newline) to bash.
 
-        Uses set_backend_command() so that errors from programmatic
-        command execution (AI tools, backend) do NOT trigger error
-        correction hints.
+        Command lifecycle is tracked via the backend control channel.
         """
-        self._exit_tracker.set_backend_command(command.strip())
+        self._command_state.register_command(
+            command.strip(), source=source, command_seq=command_seq
+        )
         command_to_send = command
         if command_seq is not None:
             command_to_send = f"__AISH_ACTIVE_COMMAND_SEQ={command_seq}; {command}"
         self.send((command_to_send + "\n").encode())
+
+    def register_user_command(self, command: str) -> None:
+        """Record a user-submitted command before it reaches bash."""
+        self._command_state.register_user_command(command)
+
+    def clear_error_correction(self) -> None:
+        """Dismiss the current error-correction hint cycle."""
+        self._command_state.clear_error_correction()
+
+    def consume_error(self) -> tuple[str, int] | None:
+        """Consume the latest user-facing command failure if available."""
+        return self._command_state.consume_error()
+
+    def handle_backend_event(
+        self, event: BackendControlEvent
+    ) -> CommandResult | None:
+        """Update internal command state from a decoded backend event."""
+        result = self._command_state.handle_backend_event(event)
+        if result is not None:
+            if self._exit_code_callback:
+                try:
+                    self._exit_code_callback(result.exit_code)
+                except Exception:
+                    pass
+            with self._completion_condition:
+                self._completed_results.append(result)
+                self._completed_results = self._completed_results[-50:]
+                self._completion_condition.notify_all()
+        return result
+
+    def decode_control_events(
+        self, chunk: bytes
+    ) -> tuple[list[BackendControlEvent], list[str]]:
+        """Decode NDJSON control events from a raw pipe read."""
+        events, remainder, errors = decode_control_chunk(self._control_buffer, chunk)
+        self._control_buffer = remainder
+        return events, errors
+
+    def _dispatch_control_chunk(self, chunk: bytes) -> list[BackendControlEvent]:
+        events, _errors = self.decode_control_events(chunk)
+        for event in events:
+            self.handle_backend_event(event)
+        return events
 
     def resize(self, rows: int, cols: int) -> None:
         """Resize terminal."""
@@ -367,9 +372,6 @@ PS1=""  # Will be set by PROMPT_COMMAND
         if not self.is_running:
             return "", -1
 
-        # Clear any stale exit code state
-        self._exit_tracker.clear_exit_available()
-
         if self._use_output_thread:
             return self._exec_via_thread(command, timeout)
         else:
@@ -379,21 +381,17 @@ PS1=""  # Will be set by PROMPT_COMMAND
         self, command: str, timeout: float
     ) -> tuple[str, int]:
         """Execute using background output thread for I/O."""
+        command_seq = self._allocate_backend_command_seq()
+
         # Enter exec mode: output thread will buffer
         self._exec_buffer.clear()
         self._exec_mode.set()
 
         # Send command
-        self.send_command(command)
+        self.send_command(command, command_seq=command_seq)
 
         # Wait for exit code with timeout
-        deadline = time.monotonic() + timeout
-        result = None
-        while time.monotonic() < deadline:
-            result = self._exit_tracker.consume_exit_code()
-            if result is not None:
-                break
-            time.sleep(0.05)
+        result = self._wait_for_completed_result(command_seq, timeout)
 
         # Exit exec mode
         self._exec_mode.clear()
@@ -402,73 +400,100 @@ PS1=""  # Will be set by PROMPT_COMMAND
         raw_output = bytes(self._exec_buffer)
         self._exec_buffer.clear()
 
-        self._exit_tracker.mark_backend_error_suppressed()
-
         if result is None:
             # Timeout - send Ctrl+C
             self.send(b"\x03")
             cleaned = self._clean_pty_output(raw_output, command)
             return cleaned, -1
 
-        _cmd, exit_code = result
         cleaned = self._clean_pty_output(raw_output, command)
-        return cleaned, exit_code
+        return cleaned, result.exit_code
 
     def _exec_via_poll(
         self, command: str, timeout: float
     ) -> tuple[str, int]:
         """Execute by directly polling PTY fd (when no output thread)."""
+        command_seq = self._allocate_backend_command_seq()
+
         # First, drain any existing output from PTY to avoid confusion
-        # with previous command's exit code marker
+        # with previous command's prompt/output.
         try:
             while True:
-                ready, _, _ = select.select([self._master_fd], [], [], 0)
+                read_fds = [self._master_fd]
+                if self._control_fd is not None:
+                    read_fds.append(self._control_fd)
+                ready, _, _ = select.select(read_fds, [], [], 0)
                 if not ready:
                     break
-                try:
-                    os.read(self._master_fd, 4096)
-                except OSError:
-                    break
+                for fd in ready:
+                    try:
+                        data = os.read(fd, 4096)
+                    except OSError:
+                        continue
+                    if fd == self._control_fd and data:
+                        self._dispatch_control_chunk(data)
         except (ValueError, OSError):
             pass
 
-        # Clear any stale exit code state
-        self._exit_tracker.clear_exit_available()
-
         # Send command
-        self.send_command(command)
+        self.send_command(command, command_seq=command_seq)
 
-        # Read output directly from PTY fd until exit code appears
+        # Read output directly from PTY/control fds until prompt_ready appears.
         deadline = time.monotonic() + timeout
         raw_output = bytearray()
 
         while time.monotonic() < deadline:
-            ready, _, _ = select.select([self._master_fd], [], [], 0.05)
-            if ready:
+            read_fds = [self._master_fd]
+            if self._control_fd is not None:
+                read_fds.append(self._control_fd)
+            ready, _, _ = select.select(read_fds, [], [], 0.05)
+            for fd in ready:
                 try:
-                    data = os.read(self._master_fd, 4096)
-                    if data:
-                        # Parse exit code markers, get cleaned data
-                        cleaned = self._exit_tracker.parse_and_update(data)
-                        raw_output.extend(cleaned)
+                    data = os.read(fd, 4096)
                 except OSError:
-                    break
+                    continue
+                if not data:
+                    continue
+                if fd == self._control_fd:
+                    self._dispatch_control_chunk(data)
+                else:
+                    raw_output.extend(data)
 
-            # Check if exit code arrived
-            result = self._exit_tracker.consume_exit_code()
+            result = self._pop_completed_result(command_seq)
             if result is not None:
-                _cmd, exit_code = result
-                # Suppress error hint: this is a backend/AI command,
-                # not a user-typed command, so never show correction hints.
-                self._exit_tracker.mark_backend_error_suppressed()
                 cleaned_output = self._clean_pty_output(bytes(raw_output), command)
-                return cleaned_output, exit_code  # type: ignore[return-value]
+                return cleaned_output, result.exit_code
 
         # Timeout - send Ctrl+C
         self.send(b"\x03")
-        self._exit_tracker.mark_backend_error_suppressed()
         cleaned_output = self._clean_pty_output(bytes(raw_output), command)
-        return cleaned_output, -1  # type: ignore[return-value]
+        return cleaned_output, -1
+
+    def _allocate_backend_command_seq(self) -> int:
+        seq = self._next_backend_command_seq
+        self._next_backend_command_seq -= 1
+        return seq
+
+    def _wait_for_completed_result(
+        self, command_seq: int, timeout: float
+    ) -> CommandResult | None:
+        deadline = time.monotonic() + timeout
+        with self._completion_condition:
+            while True:
+                result = self._pop_completed_result(command_seq)
+                if result is not None:
+                    return result
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._completion_condition.wait(timeout=min(remaining, 0.05))
+
+    def _pop_completed_result(self, command_seq: int) -> CommandResult | None:
+        for index, result in enumerate(self._completed_results):
+            if result.command_seq == command_seq:
+                return self._completed_results.pop(index)
+        return None
 
     def stop(self) -> None:
         """Stop bash and close PTY."""

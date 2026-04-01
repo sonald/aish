@@ -2,48 +2,65 @@
 
 from __future__ import annotations
 
+import threading
+
 from unittest.mock import Mock
 
 from aish.i18n import t
+from aish.pty.command_state import CommandResult, CommandState
 from aish.pty.control_protocol import BackendControlEvent
 from aish.pty.manager import PTYManager
 from aish.shell.runtime.ai import AIHandler
 from aish.shell.runtime.app import PTYAIShell
 from aish.shell.runtime.output import OutputProcessor
-from aish.shell.runtime.router import InputRouter
-from aish.shell.ui.placeholder import PlaceholderManager
-
-
-class _FakeTracker:
-    def __init__(self, *, has_exit_code: bool = False, error_info=None):
-        self._has_exit_code = has_exit_code
-        self._error_info = error_info
-        self.last_exit_code = 0
-        self.last_command = ""
-        self.clear_exit_available = Mock()
-        self.clear_error_correction = Mock()
-        self.set_last_command = Mock(side_effect=self._remember_command)
-        self.set_backend_command = Mock(side_effect=self._remember_command)
-
-    def _remember_command(self, command: str) -> None:
-        self.last_command = command
-
-    def has_exit_code(self) -> bool:
-        return self._has_exit_code
-
-    def consume_error(self):
-        return self._error_info
 
 
 class _FakePTYManager:
-    def __init__(self, tracker: _FakeTracker | None = None):
+    def __init__(
+        self,
+        *,
+        last_command: str = "",
+        last_exit_code: int = 0,
+        error_info=None,
+    ):
         self.sent: list[bytes] = []
-        self.exit_tracker = tracker or _FakeTracker()
         self._master_fd = 1
+        self._control_buffer = b""
+        self._command_state = CommandState()
+        self._completed_results: list[CommandResult] = []
+        self._completion_condition = threading.Condition()
+        self._exit_code_callback = None
+        self._error_info = error_info
+        self.last_command = last_command
+        self.last_exit_code = last_exit_code
+        self.register_user_command = Mock(side_effect=self._remember_user_command)
+        self.clear_error_correction = Mock(side_effect=self._clear_error_correction)
+        self.consume_error = Mock(side_effect=self._consume_error)
+        self.handle_backend_event = Mock(side_effect=self._handle_backend_event)
 
     def send(self, data: bytes) -> int:
         self.sent.append(data)
         return len(data)
+
+    def _remember_user_command(self, command: str) -> None:
+        self._command_state.register_user_command(command)
+        self.last_command = command
+
+    def _clear_error_correction(self) -> None:
+        self._command_state.clear_error_correction()
+
+    def _consume_error(self):
+        if self._error_info is not None:
+            error_info = self._error_info
+            self._error_info = None
+            return error_info
+        return self._command_state.consume_error()
+
+    def _handle_backend_event(self, event: BackendControlEvent):
+        result = PTYManager.handle_backend_event(self, event)
+        self.last_command = self._command_state.last_command
+        self.last_exit_code = self._command_state.last_exit_code
+        return result
 
 
 def _make_ai_handler() -> tuple[AIHandler, Mock]:
@@ -66,31 +83,19 @@ def _make_ai_handler() -> tuple[AIHandler, Mock]:
     )
 
     shell = Mock()
-    shell._input_router = None
+    shell.get_edit_buffer_text.return_value = ""
     shell.interruption_manager = Mock()
     shell.history_manager = Mock()
     shell.handle_processing_cancelled = Mock()
     shell._on_interrupt_requested = Mock()
+    shell.submit_backend_command = Mock()
     shell.operation_in_progress = False
     handler.shell = shell
     return handler, shell
 
 
-def test_input_router_routes_semicolon_question_to_ai_handler(capsys):
-    pty_manager = _FakePTYManager()
-    ai_handler = Mock()
-    router = InputRouter(pty_manager, ai_handler)
-
-    router.handle_input(b";hello\r")
-
-    ai_handler.handle_question.assert_called_once_with("hello")
-    ai_handler.handle_error_correction.assert_not_called()
-    assert pty_manager.sent == []
-    assert ";hello" in capsys.readouterr().out
-
-
 def test_ai_handler_skips_prompt_redraw_when_question_is_cancelled():
-    handler, _shell = _make_ai_handler()
+    handler, shell = _make_ai_handler()
 
     def _cancel_operation(coro, shell, history_entry=None):
         _ = (shell, history_entry)
@@ -99,12 +104,11 @@ def test_ai_handler_skips_prompt_redraw_when_question_is_cancelled():
 
     handler._execute_ai_operation = Mock(side_effect=_cancel_operation)
     handler._display_ai_response = Mock()
-    handler._trigger_prompt_and_wait = Mock()
 
     handler.handle_question("hello")
 
     handler._display_ai_response.assert_not_called()
-    handler._trigger_prompt_and_wait.assert_not_called()
+    shell.submit_backend_command.assert_not_called()
 
 
 def test_ai_handler_marks_cancelled_operation_and_notifies_shell():
@@ -120,55 +124,6 @@ def test_ai_handler_marks_cancelled_operation_and_notifies_shell():
     shell.handle_processing_cancelled.assert_called_once_with()
 
 
-def test_input_router_routes_bare_semicolon_to_error_correction(capsys):
-    pty_manager = _FakePTYManager()
-    ai_handler = Mock()
-    router = InputRouter(pty_manager, ai_handler)
-
-    router.handle_input(b";\r")
-
-    ai_handler.handle_error_correction.assert_called_once_with()
-    ai_handler.handle_question.assert_not_called()
-    assert pty_manager.sent == []
-    assert ";" in capsys.readouterr().out
-
-
-def test_input_router_marks_normal_command_as_waiting_for_result():
-    tracker = _FakeTracker()
-    pty_manager = _FakePTYManager(tracker=tracker)
-    ai_handler = Mock()
-    output_processor = Mock()
-    submit_callback = Mock(return_value=1)
-    router = InputRouter(
-        pty_manager,
-        ai_handler,
-        output_processor=output_processor,
-        command_submit_callback=submit_callback,
-    )
-
-    router.handle_input(b"ls\r")
-
-    assert pty_manager.sent == [b"l", b"s", b"\r"]
-    submit_callback.assert_called_once_with("ls")
-    tracker.set_last_command.assert_called_once_with("ls")
-    output_processor.set_waiting_for_result.assert_called_once_with(True, "ls")
-    output_processor.set_filter_exit_echo.assert_not_called()
-
-
-def test_input_router_marks_exit_command_for_echo_filtering():
-    tracker = _FakeTracker()
-    pty_manager = _FakePTYManager(tracker=tracker)
-    ai_handler = Mock()
-    output_processor = Mock()
-    router = InputRouter(pty_manager, ai_handler, output_processor=output_processor)
-
-    router.handle_input(b"exit\r")
-
-    tracker.set_last_command.assert_called_once_with("exit")
-    output_processor.set_filter_exit_echo.assert_called_once_with(True)
-    output_processor.set_waiting_for_result.assert_not_called()
-
-
 def test_output_processor_filters_exit_echo():
     processor = OutputProcessor(_FakePTYManager())
     processor.set_filter_exit_echo(True)
@@ -176,128 +131,103 @@ def test_output_processor_filters_exit_echo():
     assert processor.process(b"\rexit\r\n") == b""
 
 
-def test_output_processor_appends_placeholder_after_prompt():
-    placeholder_manager = Mock()
-    placeholder_manager.show_placeholder.return_value = b"<hint>"
-    processor = OutputProcessor(_FakePTYManager(), placeholder_manager=placeholder_manager)
+def test_output_processor_filters_prefixed_user_command_echo():
+    processor = OutputProcessor(_FakePTYManager())
+    processor.prepare_user_command_echo("pwd", 5)
 
-    rendered = processor.process(b"prompt\x1b[0m ")
+    rendered = processor.process(b"__AISH_ACTIVE_COMMAND_SEQ=5; pwd\r\n")
 
-    assert rendered.endswith(b"<hint>")
-    placeholder_manager.show_placeholder.assert_called_once_with()
+    assert rendered == b""
 
 
-def test_output_processor_does_not_append_placeholder_on_plain_m_space_tail():
-    placeholder_manager = Mock()
-    placeholder_manager.show_placeholder.return_value = b"<hint>"
-    processor = OutputProcessor(_FakePTYManager(), placeholder_manager=placeholder_manager)
+def test_output_processor_filters_prefixed_user_command_echo_before_command_output():
+    processor = OutputProcessor(_FakePTYManager())
+    processor.prepare_user_command_echo("pwd", 5)
 
-    rendered = processor.process(b"normal output m ")
+    rendered = processor.process(b"__AISH_ACTIVE_COMMAND_SEQ=5; pwd\r\n/tmp/project\r\n")
 
-    assert rendered == b"normal output m "
-    placeholder_manager.show_placeholder.assert_not_called()
+    assert rendered == b"/tmp/project\r\n"
+
+
+class _FakeLive:
+    def __init__(self, *args, **kwargs):
+        self.started = False
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.started = False
+
+    def update(self, *args, **kwargs):
+        return None
+
+
+def test_handle_thinking_start_skips_blank_line_when_already_at_line_start(monkeypatch):
+    shell = object.__new__(PTYAIShell)
+    shell._stop_animation = Mock()
+    shell._last_streaming_accumulated = ""
+    shell._last_reasoning_render_lines = []
+    shell.current_live = None
+    shell.console = Mock()
+    shell._at_line_start = True
+    shell._start_animation = Mock()
+
+    monkeypatch.setattr("aish.shell.runtime.app.Live", _FakeLive)
+
+    PTYAIShell.handle_thinking_start(shell, Mock())
+
+    shell.console.print.assert_not_called()
+    assert isinstance(shell.current_live, _FakeLive)
+    shell._start_animation.assert_called_once_with(base_text="思考中", pattern="braille")
+
+
+def test_handle_thinking_start_adds_blank_line_when_not_at_line_start(monkeypatch):
+    shell = object.__new__(PTYAIShell)
+    shell._stop_animation = Mock()
+    shell._last_streaming_accumulated = ""
+    shell._last_reasoning_render_lines = []
+    shell.current_live = None
+    shell.console = Mock()
+    shell._at_line_start = False
+    shell._start_animation = Mock()
+
+    monkeypatch.setattr("aish.shell.runtime.app.Live", _FakeLive)
+
+    PTYAIShell.handle_thinking_start(shell, Mock())
+
+    shell.console.print.assert_called_once_with()
+    assert shell._at_line_start is True
 
 
 def test_output_processor_prints_error_hint_when_command_fails(capsys):
-    tracker = _FakeTracker(has_exit_code=True, error_info=("bad command", 1))
-    processor = OutputProcessor(_FakePTYManager(tracker=tracker))
+    pty_manager = _FakePTYManager(error_info=("bad command", 1))
+    processor = OutputProcessor(pty_manager)
     processor._waiting_for_result = True
 
     rendered = processor.process(b"stderr output")
+    processor.handle_backend_event(
+        BackendControlEvent(
+            version=1,
+            type="prompt_ready",
+            ts=1,
+            payload={"exit_code": 1},
+        ),
+        result=CommandResult(command="bad command", exit_code=1, source="user"),
+    )
 
     assert rendered == b"stderr output"
     assert processor._waiting_for_result is False
-    tracker.clear_exit_available.assert_called_once_with()
+    pty_manager.consume_error.assert_called_once_with()
     assert t("shell.error_correction.press_semicolon_hint") in capsys.readouterr().out
-
-
-def test_input_router_semicolon_after_ctrl_a_keeps_tracking_safe():
-    pty_manager = _FakePTYManager()
-    ai_handler = Mock()
-    router = InputRouter(pty_manager, ai_handler)
-
-    router.handle_input(b"abc")
-    router.handle_input(b"\x01")
-    router.handle_input(b";")
-
-    assert pty_manager.sent == [b"a", b"b", b"c", b"\x01", b";"]
-    assert router._current_cmd == "abc"
-    assert router._cursor_tracking_dirty is True
-
-
-def test_input_router_recovers_when_bracketed_paste_end_missing():
-    pty_manager = _FakePTYManager()
-    ai_handler = Mock()
-    router = InputRouter(pty_manager, ai_handler)
-
-    router.handle_input(b"\x1b[200~abc")
-    assert router._in_bracketed_paste is True
-
-    router.handle_input(b"\x03")
-
-    assert router._in_bracketed_paste is False
-    assert pty_manager.sent == [b"a", b"b", b"c", b"\x03"]
-
-
-def test_input_router_handles_bracketed_paste_start_mid_chunk():
-    pty_manager = _FakePTYManager()
-    ai_handler = Mock()
-    router = InputRouter(pty_manager, ai_handler)
-
-    router.handle_input(b"ab\x1b[200~cd\x1b[201~ef")
-
-    assert router._in_bracketed_paste is False
-    assert pty_manager.sent == [b"a", b"b", b"c", b"d", b"e", b"f"]
-
-
-def test_input_router_escape_key_clears_placeholder_before_forwarding():
-    pty_manager = _FakePTYManager()
-    ai_handler = Mock()
-    placeholder_manager = Mock()
-    placeholder_manager.is_visible.return_value = True
-    placeholder_manager.clear_placeholder.return_value = b""
-
-    router = InputRouter(
-        pty_manager,
-        ai_handler,
-        placeholder_manager=placeholder_manager,
-    )
-
-    router.handle_input(b"\x1b[A")
-
-    assert pty_manager.sent == [b"\x1b[A"]
-    placeholder_manager.clear_placeholder.assert_called_once_with()
-    placeholder_manager.mark_cleared.assert_called_once_with()
-
-
-def test_placeholder_manager_show_placeholder_is_idempotent():
-    interruption_manager = Mock()
-    interruption_manager.state = None
-    interruption_manager.get_prompt_message.return_value = None
-    manager = PlaceholderManager(interruption_manager)
-
-    first = manager.show_placeholder()
-    second = manager.show_placeholder()
-
-    assert first
-    assert second == b""
-
-
-def test_placeholder_manager_is_disabled_by_default_from_environment(monkeypatch):
-    monkeypatch.delenv("AISH_ENABLE_PLACEHOLDER", raising=False)
-    interruption_manager = Mock()
-    interruption_manager.state = None
-    interruption_manager.get_prompt_message.return_value = None
-
-    manager = PlaceholderManager.from_environment(interruption_manager)
-
-    assert manager.show_placeholder() == b""
-    assert manager.is_visible() is False
 
 
 def test_pty_manager_send_command_injects_command_seq():
     manager = object.__new__(PTYManager)
-    manager._exit_tracker = _FakeTracker()
+    manager._command_state = CommandState()
+    manager._completed_results = []
+    manager._completion_condition = threading.Condition()
+    manager._exit_code_callback = None
     sent: list[bytes] = []
 
     def _fake_send(data: bytes) -> int:
@@ -307,13 +237,34 @@ def test_pty_manager_send_command_injects_command_seq():
     manager.send = _fake_send  # type: ignore[method-assign]
 
     PTYManager.send_command(manager, "echo hi", command_seq=7)
+    result = PTYManager.handle_backend_event(
+        manager,
+        BackendControlEvent(
+            version=1,
+            type="command_started",
+            ts=1,
+            payload={"command_seq": 7, "command": "echo hi"},
+        ),
+    )
+    assert result is None
+    result = PTYManager.handle_backend_event(
+        manager,
+        BackendControlEvent(
+            version=1,
+            type="prompt_ready",
+            ts=2,
+            payload={"command_seq": 7, "exit_code": 0},
+        ),
+    )
 
     assert sent == [b"__AISH_ACTIVE_COMMAND_SEQ=7; echo hi\n"]
-    assert manager._exit_tracker.last_command == "echo hi"
+    assert result is not None
+    assert manager.last_command == "echo hi"
 
 
 def test_shell_tracks_command_seq_and_returns_to_editing_on_prompt_ready():
     shell = object.__new__(PTYAIShell)
+    shell._pty_manager = _FakePTYManager()
     shell._backend_protocol_events = []
     shell._backend_protocol_errors = []
     shell._last_backend_event = None
@@ -354,12 +305,111 @@ def test_shell_tracks_command_seq_and_returns_to_editing_on_prompt_ready():
     assert shell._output_processor.handle_backend_event.call_count == 2
 
 
-def test_shell_does_not_restart_after_explicit_exit_when_flag_was_not_set(monkeypatch):
-    tracker = _FakeTracker()
-    tracker.last_command = "exit"
-
+def test_shell_tracks_backend_cwd_from_prompt_ready(monkeypatch):
     shell = object.__new__(PTYAIShell)
-    shell._pty_manager = _FakePTYManager(tracker=tracker)
+    shell._pty_manager = _FakePTYManager()
+    shell._backend_protocol_events = []
+    shell._backend_protocol_errors = []
+    shell._last_backend_event = None
+    shell._backend_session_ready = False
+    shell._shell_phase = "booting"
+    shell._next_command_seq = 1
+    shell._pending_command_seq = None
+    shell._pending_command_text = None
+    shell._running = True
+    shell._output_processor = Mock()
+    shell._current_cwd = "/old"
+    shell.current_env_info = "old-env"
+
+    chdir_mock = Mock()
+    get_env_mock = Mock(return_value="new-env")
+    monkeypatch.setattr("aish.shell.runtime.app.os.chdir", chdir_mock)
+    monkeypatch.setattr("aish.shell.runtime.app.get_current_env_info", get_env_mock)
+
+    ready = BackendControlEvent(
+        version=1,
+        type="prompt_ready",
+        ts=2,
+        payload={"exit_code": 0, "cwd": "/tmp/project"},
+    )
+
+    PTYAIShell._track_backend_event(shell, ready)
+
+    assert shell._current_cwd == "/tmp/project"
+    assert shell.current_env_info == "new-env"
+    chdir_mock.assert_called_once_with("/tmp/project")
+    get_env_mock.assert_called_once_with()
+
+
+def test_shell_handle_prompt_submission_routes_semicolon_question_to_ai_handler():
+    shell = object.__new__(PTYAIShell)
+    shell._pty_manager = Mock()
+    shell._ai_handler = Mock()
+    shell._prompt_controller = Mock()
+    shell.submit_backend_command = Mock()
+
+    PTYAIShell._handle_prompt_submission(shell, ";hello there")
+
+    shell._prompt_controller.remember_command.assert_called_once_with(";hello there")
+    shell._ai_handler.handle_question.assert_called_once_with("hello there")
+    shell._ai_handler.handle_error_correction.assert_not_called()
+    shell.submit_backend_command.assert_not_called()
+
+
+def test_shell_handle_prompt_submission_routes_bare_semicolon_to_error_correction():
+    shell = object.__new__(PTYAIShell)
+    shell._pty_manager = Mock()
+    shell._ai_handler = Mock()
+    shell._prompt_controller = Mock()
+    shell.submit_backend_command = Mock()
+
+    PTYAIShell._handle_prompt_submission(shell, ";")
+
+    shell._prompt_controller.remember_command.assert_called_once_with(";")
+    shell._ai_handler.handle_error_correction.assert_called_once_with()
+    shell._ai_handler.handle_question.assert_not_called()
+    shell.submit_backend_command.assert_not_called()
+
+
+def test_shell_handle_prompt_submission_blank_line_clears_error_state():
+    shell = object.__new__(PTYAIShell)
+    shell._pty_manager = Mock()
+    shell._ai_handler = Mock()
+    shell._prompt_controller = Mock()
+    shell.submit_backend_command = Mock()
+
+    PTYAIShell._handle_prompt_submission(shell, "   ")
+
+    shell._pty_manager.clear_error_correction.assert_called_once_with()
+    shell._prompt_controller.remember_command.assert_not_called()
+    shell.submit_backend_command.assert_not_called()
+
+
+def test_shell_submit_backend_command_registers_user_seq():
+    shell = object.__new__(PTYAIShell)
+    shell._pty_manager = Mock()
+    shell._output_processor = Mock()
+    shell._next_command_seq = 3
+    shell._pending_command_seq = None
+    shell._pending_command_text = None
+    shell._shell_phase = "editing"
+    shell._user_requested_exit = False
+
+    seq = PTYAIShell.submit_backend_command(shell, "pwd")
+
+    assert seq == 3
+    assert shell._pending_command_seq == 3
+    assert shell._pending_command_text == "pwd"
+    assert shell._shell_phase == "command_submitted"
+    shell._output_processor.set_waiting_for_result.assert_called_once_with(True, "pwd")
+    shell._pty_manager.send_command.assert_called_once_with(
+        "pwd", command_seq=3, source="user"
+    )
+
+
+def test_shell_does_not_restart_after_explicit_exit_when_flag_was_not_set(monkeypatch):
+    shell = object.__new__(PTYAIShell)
+    shell._pty_manager = _FakePTYManager(last_command="exit")
     shell._output_processor = Mock()
     shell._pending_command_text = None
     shell._user_requested_exit = False
@@ -375,74 +425,45 @@ def test_shell_does_not_restart_after_explicit_exit_when_flag_was_not_set(monkey
 
 
 def test_backend_error_suppressed_prevents_repeated_hints(capsys):
-    """After execute_command(), mark_backend_error_suppressed() must prevent
-    repeated error hints on subsequent prompt redraws."""
-    from aish.pty.exit_tracker import ExitCodeTracker
-
-    tracker = ExitCodeTracker()
-
-    # Simulate backend command execution (like AI tool calling bash_exec)
-    tracker.set_backend_command("ipaw")
-    assert tracker._suppress_error is True
-
-    # Process exit marker from PTY (command failed)
-    marker = b"[AISH_EXIT:127:ipaw]"
-    tracker.parse_and_update(marker)
-    assert tracker._exit_code_available is True
-    # Backend commands should NOT set _has_error
-    assert tracker._has_error is False
-    # _error_hint_shown should be set by the suppress logic
-    assert tracker._error_hint_shown is True
-
-    # Consume exit code (as _exec_via_poll does)
-    result = tracker.consume_exit_code()
-    assert result is not None
-    assert result[1] == 127
-
-    # Suppress error hint after backend execution
-    tracker.mark_backend_error_suppressed()
-
-    # Simulate prompt redraw sending the same marker again
-    tracker.parse_and_update(marker)
-    assert tracker._exit_code_available is True
-    # Should still NOT have error
-    assert tracker._has_error is False
-
-    # OutputProcessor.process() should NOT show the hint
-    processor = OutputProcessor(_FakePTYManager(tracker=tracker))
-    processor.process(b"prompt$ ")
+    pty_manager = _FakePTYManager()
+    processor = OutputProcessor(pty_manager)
+    processor.handle_backend_event(
+        BackendControlEvent(
+            version=1,
+            type="prompt_ready",
+            ts=1,
+            payload={"exit_code": 127},
+        ),
+        result=CommandResult(command="ipaw", exit_code=127, source="backend"),
+    )
     captured = capsys.readouterr()
     assert t("shell.error_correction.press_semicolon_hint") not in captured.out
 
 
 def test_user_command_error_shows_hint_exactly_once(capsys):
-    """User-typed commands should show error hint exactly once, not repeated."""
-    from aish.pty.exit_tracker import ExitCodeTracker
-
-    tracker = ExitCodeTracker()
-
-    # Simulate user-typed command
-    tracker.set_last_command("bad_cmd")
-    assert tracker._error_hint_shown is False
-
-    # Process exit marker (command failed)
-    marker = b"[AISH_EXIT:1:bad_cmd]"
-    tracker.parse_and_update(marker)
-    assert tracker._has_error is True
-
-    # First process() - should show hint
-    processor = OutputProcessor(_FakePTYManager(tracker=tracker))
+    pty_manager = _FakePTYManager(error_info=("bad_cmd", 1))
+    processor = OutputProcessor(pty_manager)
     processor._waiting_for_result = True
-    processor.process(b"output")
+    processor.handle_backend_event(
+        BackendControlEvent(
+            version=1,
+            type="prompt_ready",
+            ts=1,
+            payload={"exit_code": 1},
+        ),
+        result=CommandResult(command="bad_cmd", exit_code=1, source="user"),
+    )
     captured = capsys.readouterr()
     assert t("shell.error_correction.press_semicolon_hint") in captured.out
-    assert tracker._error_hint_shown is True
 
-    # Second marker from prompt redraw - should NOT show hint again
-    tracker.parse_and_update(b"[AISH_EXIT:1:bad_cmd]")
-    assert tracker._has_error is False  # Should NOT be re-set
-    assert tracker._exit_code_available is True
-
-    processor.process(b"prompt$ ")
+    processor.handle_backend_event(
+        BackendControlEvent(
+            version=1,
+            type="prompt_ready",
+            ts=2,
+            payload={"exit_code": 1},
+        ),
+        result=None,
+    )
     captured = capsys.readouterr()
     assert t("shell.error_correction.press_semicolon_hint") not in captured.out
