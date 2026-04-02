@@ -147,7 +147,9 @@ class CommandState:
                 command=command,
                 create_if_missing=True,
             )
-            if submission is not None and command:
+            if submission is not None and command and (
+                not submission.command or submission.source != "user"
+            ):
                 submission.command = command
             return None
 

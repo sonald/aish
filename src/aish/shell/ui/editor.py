@@ -10,9 +10,9 @@ from html import escape
 from typing import TYPE_CHECKING, Callable, Optional
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.formatted_text import ANSI, HTML
-from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from prompt_toolkit.key_binding.bindings.auto_suggest import (
     load_auto_suggest_bindings,
@@ -22,37 +22,12 @@ from prompt_toolkit.shortcuts import CompleteStyle
 from .completion import ShellCompleter
 
 if TYPE_CHECKING:
-    from prompt_toolkit.buffer import Buffer
-
     from ...history_manager import HistoryManager
     from ...interruption import InterruptionManager
 
 # Cache TTL for theme rendering (seconds). Avoids re-running git commands
 # on every prompt refresh when cwd and exit_code haven't changed.
 _THEME_CACHE_TTL = 2.0
-
-
-class HistoryAutoSuggest(AutoSuggest):
-    """Auto-suggest shell input from persisted command history."""
-
-    def __init__(self, history_manager: Optional["HistoryManager"] = None):
-        self._history_manager = history_manager
-
-    def get_suggestion(self, buffer: "Buffer", document) -> Suggestion | None:
-        _ = buffer
-        if self._history_manager is None:
-            return None
-
-        current = document.text_before_cursor
-        if not current.strip():
-            return None
-
-        search_prefix = current
-        match = self._history_manager.search_prefix_sync(search_prefix)
-        if not match or len(match) <= len(search_prefix):
-            return None
-
-        return Suggestion(match[len(search_prefix) :])
 
 
 class ShellPromptController:
@@ -78,12 +53,11 @@ class ShellPromptController:
         self._theme_cache_key: tuple[str, int] = ("", 0)
         self._theme_cache_output: str = ""
         self._theme_cache_time: float = 0.0
-        self._history = InMemoryHistory()
-        self._load_history()
+        self._history = FileHistory(os.path.expanduser("~/.aish_history"))
         self._completer = completer or ShellCompleter(cwd_provider=cwd_provider)
         self._session = PromptSession(
             history=self._history,
-            auto_suggest=HistoryAutoSuggest(history_manager),
+            auto_suggest=AutoSuggestFromHistory(),
             completer=self._completer,
             complete_while_typing=False,
             complete_style=CompleteStyle.READLINE_LIKE,
@@ -120,13 +94,6 @@ class ShellPromptController:
         if not command:
             return
         self._history.append_string(command)
-
-    def _load_history(self) -> None:
-        if self._history_manager is None:
-            return
-        commands = self._history_manager.get_recent_commands_sync()
-        for command in commands:
-            self._history.append_string(command)
 
     def _build_key_bindings(self):
         bindings = KeyBindings()

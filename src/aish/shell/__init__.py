@@ -14,7 +14,6 @@ from .types import (
     InputIntent,
 )
 from .ui.interaction import PTYUserInteraction
-from .ui.suggestions import SuggestionEngine
 
 __all__ = [
     "AIHandler",
@@ -27,7 +26,6 @@ __all__ = [
     "OutputProcessor",
     "PTYUserInteraction",
     "PTYAIShell",
-    "SuggestionEngine",
     "execute_command_with_pty",
     "run_shell",
 ]

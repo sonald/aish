@@ -419,6 +419,7 @@ class HistoryManager:
         self,
         prefix: str,
         session_uuid: Optional[str] = None,
+        source: Optional[str] = "user",
     ) -> Optional[str]:
         """Return the most recent command starting with prefix."""
         prefix = str(prefix or "")
@@ -430,6 +431,9 @@ class HistoryManager:
         if session_uuid:
             where += " AND session_uuid = ?"
             params.append(session_uuid)
+        if source is not None:
+            where += " AND COALESCE(source, 'user') = ?"
+            params.append(source)
 
         cursor = self._conn.execute(
             f"""
@@ -450,6 +454,7 @@ class HistoryManager:
         self,
         limit: int = 200,
         session_uuid: Optional[str] = None,
+        source: Optional[str] = "user",
     ) -> list[str]:
         """Return recent commands in chronological order for prompt history."""
         if limit <= 0:
@@ -460,6 +465,9 @@ class HistoryManager:
         if session_uuid:
             where = "WHERE session_uuid = ?"
             params.append(session_uuid)
+        if source is not None:
+            where += f"{' AND' if where else 'WHERE'} COALESCE(source, 'user') = ?"
+            params.append(source)
 
         cursor = self._conn.execute(
             f"""

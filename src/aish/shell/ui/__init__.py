@@ -9,11 +9,9 @@ from .prompt_io import (
     handle_tool_confirmation_required,
     render_interaction_modal,
 )
-from .suggestions import SuggestionEngine
 
 __all__ = [
     "PTYUserInteraction",
-    "SuggestionEngine",
     "display_security_panel",
     "get_user_confirmation",
     "get_user_input",

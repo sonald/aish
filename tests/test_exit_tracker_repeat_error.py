@@ -174,3 +174,17 @@ def test_ssh_remote_command_failure_still_offers_error_correction():
 
     assert tracker.consume_error() == ("ssh root@example.com ls /missing", 2)
     assert tracker.can_correct_last_error is True
+
+
+@pytest.mark.timeout(5)
+def test_user_command_keeps_original_text_when_bash_expands_alias():
+    """User history should preserve submitted text instead of expanded BASH_COMMAND."""
+    tracker = CommandState()
+
+    tracker.register_command("ls", source="user", command_seq=7)
+    tracker.handle_backend_event(_command_started("ls --color=auto", command_seq=7))
+    tracker.handle_backend_event(_prompt_ready(0, command_seq=7))
+
+    assert tracker.last_command == "ls"
+    assert tracker.last_result is not None
+    assert tracker.last_result.command == "ls"
