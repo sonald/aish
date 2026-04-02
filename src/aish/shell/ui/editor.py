@@ -168,8 +168,8 @@ class ShellPromptController:
                 cwd=cwd,
                 timeout=1,
             )
-            if result.returncode == 0 and result.stdout.strip():
-                output = result.stdout.strip()
+            output = result.stdout.rstrip("\r\n")
+            if result.returncode == 0 and output:
                 self._theme_cache_key = cache_key
                 self._theme_cache_time = now
                 self._theme_cache_output = output

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 from prompt_toolkit.completion import CompleteEvent
@@ -35,6 +36,38 @@ def test_shell_prompt_controller_forwards_custom_prompt_message():
     assert result == "echo hi"
     controller._session.prompt.assert_called_once()
     assert controller._session.prompt.call_args.args[0] == "... "
+    assert "bottom_toolbar" not in controller._session.prompt.call_args.kwargs
+    assert "style" not in controller._session.prompt.call_args.kwargs
+
+
+def test_shell_prompt_controller_render_theme_preserves_trailing_space(monkeypatch):
+    controller = ShellPromptController(prompt_theme="minimal")
+
+    monkeypatch.setattr(controller, "_find_theme_script", lambda _theme: "/tmp/theme.aish")
+    monkeypatch.setattr(
+        "aish.shell.ui.editor.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="\x1b[32m❯\x1b[0m \n",
+        ),
+    )
+
+    assert controller._render_theme() == "\x1b[32m❯\x1b[0m "
+
+
+def test_shell_prompt_controller_render_theme_preserves_multiline_prompt_suffix(monkeypatch):
+    controller = ShellPromptController(prompt_theme="developer")
+
+    monkeypatch.setattr(controller, "_find_theme_script", lambda _theme: "/tmp/theme.aish")
+    monkeypatch.setattr(
+        "aish.shell.ui.editor.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="line1\n\x1b[32m❯\x1b[0m \n",
+        ),
+    )
+
+    assert controller._render_theme() == "line1\n\x1b[32m❯\x1b[0m "
 
 
 def test_shell_completer_suggests_builtin_and_special_commands():
