@@ -325,6 +325,7 @@ class LLMSession:
         env_manager=None,
         interruption_manager=None,
         history_manager=None,
+        memory_manager=None,
     ):  # noqa: F821
         self.config = config
         self.model = config.model
@@ -389,6 +390,13 @@ class LLMSession:
                 self.system_diagnose_agent.name: self.system_diagnose_agent,
                 self.skill_tool.name: self.skill_tool,
             }
+
+            # Register memory tool if memory manager is provided
+            if memory_manager is not None:
+                from aish.tools.memory_tool import MemoryTool
+
+                self.memory_tool = MemoryTool(memory_manager=memory_manager)
+                self.tools[self.memory_tool.name] = self.memory_tool
         else:
             # Use the provided tool set
             self.tools = tools_override
@@ -1142,7 +1150,9 @@ class LLMSession:
         messages = context_manager.as_messages()
         if system_message:
             if messages and messages[0]["role"] == "system":
-                messages[0]["content"] = system_message
+                # Merge: keep knowledge context, append system prompt
+                existing = messages[0]["content"]
+                messages[0]["content"] = f"{existing}\n\n{system_message}"
             else:
                 messages.insert(0, {"role": "system", "content": system_message})
         reminder = self._build_skills_reminder_message()

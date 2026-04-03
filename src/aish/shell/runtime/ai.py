@@ -9,7 +9,8 @@ import re
 import sys
 from typing import TYPE_CHECKING, Optional
 
-from ...context_manager import ContextManager
+from ...context_manager import ContextManager, MemoryType
+
 from ...i18n import t
 from ...prompts import PromptManager
 
@@ -174,6 +175,34 @@ class AIHandler:
         prefix = " ".join([f"use {name} skill to do this." for name in refs])
         return f"{prefix}\n\n{text}"
 
+    def _recall_memories(self, query: str) -> None:
+        """Inject relevant memories into context before AI interaction."""
+        shell = getattr(self, "shell", None)
+        if not shell:
+            return
+        mem_mgr = getattr(shell, "memory_manager", None)
+        if not mem_mgr:
+            return
+        memory_config = getattr(shell.config, "memory", None)
+        if not memory_config or not getattr(memory_config, "auto_recall", False):
+            return
+        try:
+            results = mem_mgr.recall(
+                query, limit=getattr(memory_config, "recall_limit", 5)
+            )
+            if results:
+                lines = ['<long-term-memory source="recall">']
+                for r in results:
+                    lines.append(f"- [{r.category.value}] {r.content}")
+                lines.append("</long-term-memory>")
+                self.context_manager.add_memory(
+                    MemoryType.KNOWLEDGE,
+                    {"key": "memory_recall", "value": "\n".join(lines)},
+                )
+        except Exception:
+            pass  # Memory recall is best-effort
+
+
     @staticmethod
     def _get_cancel_exceptions() -> tuple[type[BaseException], ...]:
         """Return cancellation exception types available in the current context."""
@@ -284,6 +313,7 @@ Please analyze the error and suggest a fix. Check the shell history context abov
                         system_message=system_message,
                         stream=True,
                     )
+
                     return response
 
             shell = self._require_shell()
@@ -328,12 +358,17 @@ Please analyze the error and suggest a fix. Check the shell history context abov
 
                     question_processed = self._inject_skill_prefix(question)
 
+                    # Recall: inject relevant memories before AI call
+                    self._recall_memories(question_processed)
+
                     response = await self.llm_session.process_input(
                         question_processed,
                         context_manager=self.context_manager,
                         system_message=system_message,
                         stream=True,
                     )
+
+                    # Retain: extract facts after AI call
                     return response
 
             shell = self._require_shell()

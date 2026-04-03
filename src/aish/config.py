@@ -12,6 +12,8 @@ from typing import Any, Optional, TypedDict, cast
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from aish.memory.config import MemoryConfig
+
 
 class ToolArgPreviewSettingsDict(TypedDict):
     enabled: bool
@@ -234,6 +236,11 @@ class ConfigModel(BaseModel):
         description="Whether the current configuration uses a free API key",
     )
 
+    memory: MemoryConfig = Field(
+        default_factory=MemoryConfig,
+        description="Long-term memory configuration",
+    )
+
     @field_validator("tool_arg_preview", mode="before")
     @classmethod
     def normalize_tool_arg_preview(cls, v: Any) -> dict[str, ToolArgPreviewSettings]:
@@ -378,6 +385,10 @@ class Config:
                     # Add prompt_theme if missing (new field migration)
                     if "prompt_theme" not in config_data:
                         config_data["prompt_theme"] = "compact"
+                        need_save = True
+                    # Add memory section if missing (new field migration)
+                    if "memory" not in config_data:
+                        config_data["memory"] = {"enabled": True}
                         need_save = True
 
                     if need_save:

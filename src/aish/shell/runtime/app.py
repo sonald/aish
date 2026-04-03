@@ -98,6 +98,23 @@ class PTYAIShell:
             model=config.model,
             enable_token_estimation=getattr(config, "enable_token_estimation", True),
         )
+
+        # Long-term memory must be initialized before LLM session so that
+        # MemoryTool can be registered during session construction.
+        self.memory_manager = None
+        memory_config = getattr(config, "memory", None)
+        if memory_config and getattr(memory_config, "enabled", False):
+            from aish.memory.manager import MemoryManager
+
+            self.memory_manager = MemoryManager(config=memory_config)
+            # Inject session context from memory (always returns something useful)
+            mem_ctx = self.memory_manager.get_session_context()
+            if mem_ctx:
+                self.context_manager.add_memory(
+                    MemoryType.KNOWLEDGE,
+                    {"key": "long_term_memory", "value": mem_ctx},
+                )
+
         self.llm_session: "LLMSession" = self._create_llm_session()
 
         self.uname_info, self.os_info, self.basic_env_info = get_or_fetch_static_env_info()
@@ -246,6 +263,7 @@ class PTYAIShell:
             interruption_manager=interruption_manager,
             is_command_approved=self._is_command_approved,
             history_manager=getattr(self, "history_manager", None),
+            memory_manager=getattr(self, "memory_manager", None),
         )
 
         def init_litellm_in_background() -> None:
@@ -1649,6 +1667,12 @@ class PTYAIShell:
         if hasattr(self, "history_manager"):
             try:
                 self.history_manager.close()
+            except Exception:
+                pass
+
+        if self.memory_manager:
+            try:
+                self.memory_manager.close()
             except Exception:
                 pass
 
