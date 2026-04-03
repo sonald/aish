@@ -146,6 +146,7 @@ cli:
     verify_live_detail: "详情"
     verify_timeout: "在线验证超时"
     verify_cancelled: "在线验证已终止"
+    verify_model_prefix_required: "设置 API Base 时，模型名必须带 provider 前缀，例如 openai/{model}"
     verify_no_tool_call_required: "强制调用未返回工具调用"
     verify_no_tool_call_auto: "自动模式未触发工具调用"
     debug_request_title: "在线请求（{mode}）"

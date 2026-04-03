@@ -201,6 +201,11 @@ def live_smoke_provider_config() -> LiveSmokeProviderConfig:
         pytest.skip("missing AISH_LIVE_SMOKE_MODEL for live smoke test")
     if not api_key:
         pytest.skip("missing AISH_LIVE_SMOKE_API_KEY for live smoke test")
+    if api_base and "/" not in model:
+        pytest.fail(
+            "AISH_LIVE_SMOKE_MODEL must include a provider prefix when AISH_LIVE_SMOKE_API_BASE is set, "
+            f"for example openai/{model}"
+        )
 
     return LiveSmokeProviderConfig(model=model, api_key=api_key, api_base=api_base)
 

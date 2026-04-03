@@ -146,6 +146,7 @@ cli:
     verify_live_detail: "Details"
     verify_timeout: "Live verification timed out"
     verify_cancelled: "Live verification cancelled"
+    verify_model_prefix_required: "When API Base is set, the model must include a provider prefix, for example openai/{model}"
     verify_no_tool_call_required: "No tool call returned (required mode)"
     verify_no_tool_call_auto: "Model did not call tool (auto mode)"
     debug_request_title: "Live request ({mode})"

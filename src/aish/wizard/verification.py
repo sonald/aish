@@ -33,6 +33,15 @@ CONNECTIVITY_TIMEOUT = 15.0
 TOOL_CHECK_TIMEOUT = 30.0
 
 
+def _validate_model_name(model: str, api_base: Optional[str]) -> str | None:
+    trimmed = (model or "").strip()
+    if not trimmed:
+        return t("cli.setup.model_custom_required")
+    if api_base and "/" not in trimmed:
+        return t("cli.setup.verify_model_prefix_required", model=trimmed)
+    return None
+
+
 def _compact_error_message(error: object, *, max_len: int = 180) -> str:
     if error is None:
         return t("cli.setup.verify_failed_unknown")
@@ -113,6 +122,10 @@ async def _check_connectivity(
     debug: bool = False,
 ) -> ConnectivityResult:
     """Send a minimal completion request to verify the model is reachable."""
+    model_error = _validate_model_name(model, api_base)
+    if model_error:
+        return ConnectivityResult(ok=False, error=model_error)
+
     messages = [{"role": "user", "content": CONNECTIVITY_PROMPT}]
     kwargs = dict(
         model=model,
@@ -255,6 +268,9 @@ async def _check_tool_support(
     debug: bool = False,
 ) -> ToolSupportResult:
     """Live tool-call probe: send a ping tool and see if the model invokes it."""
+    model_error = _validate_model_name(model, api_base)
+    if model_error:
+        return ToolSupportResult(supports=None, error=model_error)
 
     # Quick static pre-check – if litellm metadata says "no", skip the live call.
     static = _quick_static_check(litellm, model)
@@ -323,13 +339,12 @@ async def _check_tool_support(
             )
         return response
 
-    required_choice = {"type": "function", "function": {"name": "ping"}}
-
-    # Try with tool_choice=required first
+    # Runtime uses tool_choice=auto. Verify the same path instead of a stricter
+    # mode that some gateways do not implement consistently.
     try:
         with anyio.fail_after(timeout_seconds):
-            response = await _call(required_choice, "required")
-        return _parse(response, strict=True)
+            response = await _call(None, "auto")
+        return _parse(response, strict=False)
     except TimeoutError:
         return ToolSupportResult(
             supports=None,
@@ -341,37 +356,12 @@ async def _check_tool_support(
         message = _compact_error_message(raw_message)
         if debug:
             _print_debug_block(
-                t("cli.setup.debug_error_title", mode="required"),
+                t("cli.setup.debug_error_title", mode="auto"),
                 message,
                 border_style="red",
             )
         if _error_indicates_no_tool_support(raw_message):
             return ToolSupportResult(supports=False, error=message)
-
-        # Fallback: some models reject tool_choice but support tools via auto
-        if _error_indicates_tool_choice_unsupported(raw_message):
-            try:
-                with anyio.fail_after(timeout_seconds):
-                    response = await _call(None, "auto")
-                return _parse(response, strict=False)
-            except TimeoutError:
-                return ToolSupportResult(
-                    supports=None,
-                    timed_out=True,
-                    error=t("cli.setup.verify_timeout"),
-                )
-            except Exception as fallback_exc:
-                fb_raw = str(fallback_exc)
-                fb_msg = _compact_error_message(fb_raw)
-                if debug:
-                    _print_debug_block(
-                        t("cli.setup.debug_error_title", mode="auto"),
-                        fb_msg,
-                        border_style="red",
-                    )
-                if _error_indicates_no_tool_support(fb_raw):
-                    return ToolSupportResult(supports=False, error=fb_msg)
-                return ToolSupportResult(supports=None, error=fb_msg)
 
         return ToolSupportResult(supports=None, error=message)
 
