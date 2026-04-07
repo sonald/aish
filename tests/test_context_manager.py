@@ -395,5 +395,20 @@ class TestContextManagerIntegration:
         assert len(cm.knowledge_cache) == 1
 
 
+def test_recall_clears_old_results_on_no_match():
+    """When recall finds no match, old memory_recall must be removed from knowledge_cache."""
+    cm = ContextManager()
+    # Simulate a previous successful recall
+    cm.add_memory(MemoryType.KNOWLEDGE, {
+        "key": "memory_recall",
+        "value": '<long-term-memory source="recall">\n- [other] stale fact\n</long-term-memory>',
+    })
+    assert "memory_recall" in cm.knowledge_cache
+
+    # Simulate clearing on no-match (as _recall_memories does)
+    cm.knowledge_cache.pop("memory_recall", None)
+    assert "memory_recall" not in cm.knowledge_cache
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

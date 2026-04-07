@@ -187,6 +187,9 @@ class AIHandler:
         if not memory_config or not getattr(memory_config, "auto_recall", False):
             return
         try:
+            # Always clear previous recall first to prevent pollution
+            self.context_manager.knowledge_cache.pop("memory_recall", None)
+
             results = mem_mgr.recall(
                 query, limit=getattr(memory_config, "recall_limit", 5)
             )
@@ -195,9 +198,17 @@ class AIHandler:
                 for r in results:
                     lines.append(f"- [{r.category.value}] {r.content}")
                 lines.append("</long-term-memory>")
+                text = "\n".join(lines)
+
+                # Enforce recall_token_budget (~4 chars/token heuristic)
+                budget = getattr(memory_config, "recall_token_budget", 512)
+                max_chars = budget * 4
+                if len(text) > max_chars:
+                    text = text[:max_chars].rstrip() + "\n</long-term-memory>"
+
                 self.context_manager.add_memory(
                     MemoryType.KNOWLEDGE,
-                    {"key": "memory_recall", "value": "\n".join(lines)},
+                    {"key": "memory_recall", "value": text},
                 )
         except Exception:
             pass  # Memory recall is best-effort
@@ -368,7 +379,6 @@ Please analyze the error and suggest a fix. Check the shell history context abov
                         stream=True,
                     )
 
-                    # Retain: extract facts after AI call
                     return response
 
             shell = self._require_shell()

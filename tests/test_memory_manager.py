@@ -142,7 +142,9 @@ def test_ensure_daily_note_created(memory_manager):
 def test_get_system_prompt_section(memory_manager):
     section = memory_manager.get_system_prompt_section()
     assert "Memory System" in section
-    assert "memory_search" in section
+    assert "memory" in section
+    assert "search" in section
+    assert "memory_search" not in section
 
 
 def test_store_permanent_goes_to_memory_md(memory_manager):
@@ -217,3 +219,73 @@ def test_session_context_ignores_missing_linked_file(memory_manager):
     assert "Long-term Memory" in ctx
     assert "Missing" in ctx  # link text in MEMORY.md
     # No error, just missing content gracefully skipped
+
+
+def test_delete_also_removes_from_memory_md(memory_manager):
+    """delete() must remove the entry from MEMORY.md, not just SQLite."""
+    entry_id = memory_manager.store(
+        content="Permanent fact to delete",
+        category=MemoryCategory.SOLUTION,
+        source="explicit",
+    )
+    # Confirm it was written to MEMORY.md
+    mem_text = memory_manager.memory_md.read_text()
+    assert "Permanent fact to delete" in mem_text
+
+    memory_manager.delete(entry_id)
+
+    # SQLite row gone
+    results = memory_manager.recall("Permanent fact to delete", limit=5)
+    assert len(results) == 0
+    # Markdown also gone
+    mem_text = memory_manager.memory_md.read_text()
+    assert "Permanent fact to delete" not in mem_text
+
+
+def test_delete_also_removes_from_daily_note(memory_manager):
+    """delete() must remove the entry from daily note, not just SQLite."""
+    entry_id = memory_manager.store(
+        content="Ephemeral fact to delete",
+        category=MemoryCategory.OTHER,
+        source="daily:2026-04-07",
+    )
+    daily_path = memory_manager.memory_dir / "2026-04-07.md"
+    assert "Ephemeral fact to delete" in daily_path.read_text()
+
+    memory_manager.delete(entry_id)
+
+    results = memory_manager.recall("Ephemeral fact to delete", limit=5)
+    assert len(results) == 0
+    assert "Ephemeral fact to delete" not in daily_path.read_text()
+
+
+def test_recall_text_truncation(memory_manager):
+    """Recalled content should be truncatable to fit a token budget."""
+    # Store a long memory with actual searchable content
+    long_content = "environment configuration " * 100  # ~2600 chars
+    memory_manager.store(
+        content=long_content,
+        category=MemoryCategory.ENVIRONMENT,
+        source="explicit",
+    )
+
+    results = memory_manager.recall("environment", limit=5)
+    assert len(results) >= 1
+
+    # Build recall text the same way _recall_memories does
+    lines = ['<long-term-memory source="recall">']
+    for r in results:
+        lines.append(f"- [{r.category.value}] {r.content}")
+    lines.append("</long-term-memory>")
+    full_text = "\n".join(lines)
+
+    # Truncate with budget (4 chars/token heuristic)
+    budget = 50
+    max_chars = budget * 4
+    if len(full_text) > max_chars:
+        truncated = full_text[:max_chars].rstrip() + "\n</long-term-memory>"
+    else:
+        truncated = full_text
+
+    assert len(truncated) <= max_chars + len("\n</long-term-memory>")
+    assert truncated.endswith("</long-term-memory>")

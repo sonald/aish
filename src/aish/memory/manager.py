@@ -183,8 +183,28 @@ class MemoryManager:
         return results
 
     def delete(self, entry_id: int) -> None:
+        # Fetch entry info before deleting for Markdown cleanup
+        row = self._conn.execute(
+            "SELECT category, content, source FROM memory_meta WHERE id = ?",
+            (entry_id,),
+        ).fetchone()
+
         self._conn.execute("DELETE FROM memory_meta WHERE id = ?", (entry_id,))
         self._conn.commit()
+
+        if row is None:
+            return
+        category = MemoryCategory(row[0])
+        content = row[1]
+        source = row[2]
+
+        # Remove from Markdown to keep dual-write consistent
+        if category in self._PERMANENT_CATEGORIES:
+            self._remove_line_from_markdown(self.memory_md, content)
+        else:
+            date_str = source.split(":", 1)[1] if source.startswith("daily:") else self.today
+            daily_path = self.memory_dir / f"{date_str}.md"
+            self._remove_line_from_markdown(daily_path, content)
 
     def list_recent(self, limit: int = 10) -> list[MemoryEntry]:
         cursor = self._conn.execute(
@@ -251,7 +271,7 @@ class MemoryManager:
             "## Memory System\n"
             "You have persistent long-term memory.\n"
             "1. BEFORE answering about prior work, decisions, dates, people, "
-            "or preferences: use the `memory_search` tool.\n"
+            "or preferences: use the `memory` tool with action `search`.\n"
             "2. When you learn an important fact (user preference, environment "
             "detail, solution, pattern): use the `memory` tool's `store` action "
             "to save it.\n"
@@ -346,6 +366,18 @@ class MemoryManager:
                     break
             lines.insert(insert_idx, line)
             daily_path.write_text("\n".join(lines))
+
+    def _remove_line_from_markdown(self, path: Path, content: str) -> None:
+        """Remove a line matching the stored format ``- {content}`` from a Markdown file."""
+        if not path.exists():
+            return
+        text = path.read_text()
+        target = f"- {content}"
+        if target not in text:
+            return
+        lines = text.split("\n")
+        lines = [ln for ln in lines if ln.strip() != target]
+        path.write_text("\n".join(lines))
 
     # ------------------------------------------------------------------
     # Maintenance
